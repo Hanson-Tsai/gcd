@@ -1,0 +1,39 @@
+name: E2E
+
+# Tests against real GitHub. Manual only: never on push or pull_request.
+# Needs repository variable GCD_E2E_REPO (a private throwaway repo,
+# owner/repo) and secret GCD_E2E_TOKEN (fine-grained PAT on it with
+# Contents, Workflows and Actions read/write). Optional secret
+# GCD_E2E_READONLY_TOKEN (Contents: read only).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Configure git
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global init.defaultBranch main
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: E2E tests
+        env:
+          GCD_E2E_REPO: ${{ vars.GCD_E2E_REPO }}
+          GCD_TOKEN: ${{ secrets.GCD_E2E_TOKEN }}
+          GCD_E2E_READONLY_TOKEN: ${{ secrets.GCD_E2E_READONLY_TOKEN }}
+        run: go test -count=1 -v -run E2E ./...
