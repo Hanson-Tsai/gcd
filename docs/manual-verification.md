@@ -117,3 +117,68 @@ over HTTPS with `GCD_TOKEN` against the fake GitHub. What only GitHub can show:
 6. After compaction, `gcd sync` on two other machines reports no conflicts,
    and `gcd log` / `gcd restore --at <before snapshot>` report the retention
    boundary as the snapshot's date.
+
+## Actions compaction workflow (#15)
+
+**Verify first: does GitHub accept the compaction push made with the Actions
+`GITHUB_TOKEN`?** That token can never have the Workflows permission, and
+compaction rewrites commits that contain `.github/workflows/gcd-compact.yml`
+(the new snapshot root adds it, and kept commits from `gcd workflow upgrade`
+or schedule changes touch it). It is undocumented whether GitHub checks only
+the old tip against the new tip, or every pushed commit. The offline fake
+GitHub assumes per-commit checks (`authtest` pre-receive hook).
+
+1. On a throwaway private repo with history older than `retention_days`
+   (set `retention_days = 1` with `gcd config edit` and wait a day, or plant
+   back-dated commits with `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE`), with the
+   workflow installed and **no** `GCD_TOKEN` repository secret, run the
+   workflow (`gcd compact`).
+   - **Accepted**: compaction works out of the box. Note it here and in the
+     README, and the secret stays an optional extra.
+   - **Refused** with `refusing to allow a GitHub App to create or update
+     workflow`: the job log must show gcd's hint (add the repository secret
+     `GCD_TOKEN`, or `gcd compact --local`). Then add a fine-grained PAT
+     (Contents + Workflows: read and write on this repo only) as the secret
+     `GCD_TOKEN`, re-run, and it must succeed. Record the outcome; if the
+     secret is always needed, make `gcd init` say so (follow-up ticket).
+
+Offline coverage: `internal/workflow` (render, checksum pinning from
+`checksums.txt` served by httptest, version rules, YAML shape),
+`internal/disk` (install/upgrade/schedule re-render on `file://` repos),
+`internal/auth` (workflow_dispatch against the fake GitHub) and
+`internal/cli` (`init` installs the pinned workflow and is the Workflows
+probe, `compact` dispatches and prints the run page, `workflow upgrade`, dev
+builds, the Actions-token refusal hint). Opt-in:
+`TestE2EWorkflowUpgradeAndDispatch` (set repository variable
+`GCD_E2E_GCD_VERSION` to a published release).
+
+What only GitHub can show:
+
+2. With a **release** build (a dev build skips the workflow and says so),
+   `gcd init <you>/gcd-e2e ~/gcd-e2e` prints `installed the compaction
+   workflow .github/workflows/gcd-compact.yml (gcd X.Y.Z)`. On GitHub the
+   file pins `GCD_VERSION`, and `GCD_SHA256` equals the
+   `gcd_X.Y.Z_linux_amd64.tar.gz` line of the release's `checksums.txt`. The
+   Actions tab lists **gcd compact** with a schedule.
+3. A token **without Workflows** write: `gcd init` fails naming
+   `Workflows: read and write`; no disk is registered and nothing was pushed
+   (this also closes #13 step 9).
+4. `gcd compact` prints `https://github.com/<you>/gcd-e2e/actions/runs/<id>`
+   (GitHub returns run details since 2026-02-19; on 204 it prints the
+   workflow's page). The run: downloads, `sha256sum --check` passes, prints
+   `gcd version X.Y.Z linux/amd64`, compacts (or says nothing to compact).
+   The token never appears in the log.
+5. Tamper check: edit `GCD_SHA256` in the workflow on GitHub (one hex digit)
+   and run it. The job must fail at the checksum step and never run gcd.
+   Restore with `gcd workflow upgrade`.
+6. A token **without Actions** write: `gcd compact` fails naming
+   `Actions: read and write`.
+7. `gcd config edit`, change `compact_schedule` to a time a few minutes
+   ahead (UTC): one commit changes both `.gcd/config.toml` and the workflow's
+   `cron:`, and the scheduled run starts (GitHub may delay it by several
+   minutes).
+8. With an older release pinned, `gcd workflow upgrade` from a newer release
+   prints `gcd A -> B` and the workflow pins B with B's checksum.
+9. After the Actions run compacts, `gcd sync` on two machines reports no
+   conflicts and `gcd log` starts at the snapshot (the #12 step 6 check, with
+   Actions doing the compaction). This is the ticket's end-to-end criterion.
