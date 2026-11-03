@@ -22,8 +22,9 @@ const (
 	Download
 	// DeleteLocal: the file was deleted remotely; remove Path from the folder.
 	DeleteLocal
-	// Conflict: both sides changed Path differently. Resolution (conflict
-	// copies, modify/delete rules) is ticket #4.
+	// Conflict: both sides changed Path to different content. The remote
+	// version (Hash) stays at Path; the local version moves to Copy, a
+	// conflict copy, and both are uploaded.
 	Conflict
 )
 
@@ -47,14 +48,20 @@ func (o Op) String() string {
 type Action struct {
 	Op   Op
 	Path string
-	Hash string // target content for Upload/Download; empty for deletes
+	Hash string // target content at Path for Upload/Download/Conflict; empty for deletes
 	// Local and Remote are the hashes on each side ("" = absent); set for
 	// every action so callers can classify adds vs modifications.
 	Local, Remote string
+	// Copy is the conflict-copy path for a Conflict. Reconcile leaves it
+	// empty; the caller names copies (see apply.CopyName).
+	Copy string
 }
 
 // Reconcile compares base, local and remote and returns actions sorted by path.
-// Paths where local and remote already agree produce no action.
+// Paths where local and remote already agree produce no action (this covers
+// both sides making the same change and both sides deleting). A change on one
+// side wins; an edit wins over a delete; different edits are a Conflict. On
+// the first sync base is empty, so differing files on both sides conflict.
 func Reconcile(base, local, remote Files) []Action {
 	paths := map[string]struct{}{}
 	for _, m := range []Files{base, local, remote} {
@@ -81,8 +88,12 @@ func Reconcile(base, local, remote Files) []Action {
 			} else {
 				a.Op, a.Hash = Upload, l
 			}
+		case l == "": // deleted locally, modified remotely: keep the edit
+			a.Op, a.Hash = Download, r
+		case r == "": // deleted remotely, modified locally: keep the edit
+			a.Op, a.Hash = Upload, l
 		default:
-			a.Op = Conflict
+			a.Op, a.Hash = Conflict, r
 		}
 		actions = append(actions, a)
 	}
