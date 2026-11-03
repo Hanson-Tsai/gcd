@@ -27,6 +27,7 @@ import (
 	"github.com/Hanson-Tsai/gcd/internal/gitstore"
 	"github.com/Hanson-Tsai/gcd/internal/reconcile"
 	"github.com/Hanson-Tsai/gcd/internal/scan"
+	"github.com/Hanson-Tsai/gcd/internal/workflow"
 )
 
 // Options configures a Disk.
@@ -99,6 +100,10 @@ type Result struct {
 	// stopped before pushing or touching the folder (error ErrMassDelete).
 	NeedsConfirm   bool
 	PendingDeletes int
+	// WorkflowVersion (Status only) is the gcd version the remote's
+	// compaction workflow pins; "" when the repo has no workflow or one gcd
+	// cannot read.
+	WorkflowVersion string
 }
 
 // Conflict is a path both sides changed to different content. The remote
@@ -248,7 +253,8 @@ func (d *Disk) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 // downloads, conflicts (with the copy name Sync would pick today), skipped and
 // rejected paths, and whether the sync would stop for a mass delete
 // (NeedsConfirm, PendingDeletes; Status itself returns no ErrMassDelete).
-// Commit and BaseTree stay empty. A newer repo format fails as in Sync.
+// Commit and BaseTree stay empty; WorkflowVersion is set. A newer repo format
+// fails as in Sync.
 //
 // Status runs Sync's own planning (scan, fetch, file rules, reconcile, mass
 // delete check, re-check of files about to be uploaded), so the two cannot
@@ -278,6 +284,15 @@ func (d *Disk) Status(ctx context.Context) (Result, error) {
 		r.needsConfirm()
 	}
 	r.res.summarize(r.plan)
+	raw, err := d.readBlobAt(ctx, r.remote, workflow.Path)
+	if err != nil {
+		return r.res, err
+	}
+	if raw != nil {
+		if spec, err := workflow.Parse(raw); err == nil {
+			r.res.WorkflowVersion = spec.Pin.Version
+		}
+	}
 	return r.res, nil
 }
 

@@ -10,31 +10,41 @@ import (
 func init() {
 	register(command{
 		name:    "sync",
-		usage:   "sync [--disk <name>] [--yes]",
+		usage:   "sync [--disk <name>] [--yes] [--json]",
 		summary: "upload local changes and download remote changes",
 		run:     runSync,
+		json:    true,
 	})
 }
 
 func runSync(ctx context.Context, e *env, args []string) error {
 	fs := newDiskFlags(e, "sync")
 	yes := fs.Bool("yes", false, "go ahead even if the sync deletes more files than the repo config allows")
+	jsonFlag(fs, e)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return errUsage
 	}
-	d, _, err := openCurrentDisk(e)
+	d, ent, err := openCurrentDisk(e)
 	if err != nil {
 		return err
 	}
 	res, err := d.Sync(ctx, disk.SyncOptions{Yes: *yes})
 	if res.NeedsConfirm {
-		return fmt.Errorf("%w\nif these deletions are intended, run `gcd sync --yes`", err)
+		return &confirmError{
+			err:     fmt.Errorf("%w\nif these deletions are intended, run `gcd sync --yes`", err),
+			pending: res.PendingDeletes,
+		}
 	}
 	if err != nil {
 		return err
+	}
+	if e.json {
+		out := newResultJSON(ent.Name, res)
+		out.Commit = ptr(res.Commit)
+		return writeJSON(e.stdout, out)
 	}
 	for _, c := range res.Uploaded {
 		fmt.Fprintf(e.stdout, "up    %s %s\n", sign(c.Kind), c.Path)
