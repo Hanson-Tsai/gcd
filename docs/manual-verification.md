@@ -213,3 +213,54 @@ What only GitHub can show:
 9. After the Actions run compacts, `gcd sync` on two machines reports no
    conflicts and `gcd log` starts at the snapshot (the #12 step 6 check, with
    Actions doing the compaction). This is the ticket's end-to-end criterion.
+
+## Claude Code plugin and --json (#18, release v0.1.0-rc2)
+
+Offline coverage: `internal/cli` (`json_test.go`, `json_unix_test.go`,
+`watch_json_test.go`) checks every `--json` object, every error kind and
+`watch --disk/--json/--until` against `file://` remotes. The plugin's evals
+(`plugins/gcd/evals/`, see its README) run the skill and slash commands
+against an offline world.
+
+Before the rc2 tag: `claude plugin validate .` and
+`claude plugin validate plugins/gcd` pass, and `plugins/gcd/.claude-plugin/plugin.json`
+has `"version": "0.1.0-rc2"`.
+
+With the published `v0.1.0-rc2`:
+
+1. Install the rc2 release binary (release download with
+   `checksums.txt`) and check `gcd version --json` prints
+   `"version":"0.1.0-rc2"` and `"dev":false`.
+2. Run the full eval suite with the rc2 binary on `PATH`:
+   `claude plugin eval plugins/gcd --scaffold --allow-tools Bash Edit Write`
+   (see `plugins/gcd/evals/README.md` for `PATH`, the sandbox and `TMPDIR`).
+   Every case passes. Record the score and the report link.
+3. In a clean Claude Code (no local marketplace of this repo):
+   `/plugin marketplace add Hanson-Tsai/gcd`, then `/plugin install gcd@skills`.
+   `/plugin` lists `gcd` version `0.1.0-rc2`, and `/gcd:` completes to the six
+   commands.
+4. Make a throwaway private repo `<you>/gcd-plugin-test` and run `/gcd:init`.
+   The agent checks the version, explains the three token permissions and
+   gives `gcd init <you>/gcd-plugin-test <folder>`. It never asks for the token
+   in the chat. Run the line in your own terminal.
+5. Ask "我的雲端硬碟有什麼要同步的？" with a few new files: the skill fires,
+   runs `gcd status --json` and answers in Chinese. `/gcd:status` gives the
+   same summary.
+6. `/gcd:sync` with only new files: status, then sync, no question. Delete
+   every file of the folder and `/gcd:sync` again: the agent stops, says how
+   many files would be deleted and asks; it does not add `--yes`. The files
+   stay on GitHub.
+7. Change one file on two machines and sync both: the agent reports the
+   conflict copy's path and leaves both files alone.
+8. `/gcd:log <file>` lists versions with time and machine. Delete a file,
+   sync, then ask to get it back: the agent restores it with `gcd restore` and
+   says the next sync uploads it. With a local edit in the way it asks before
+   `--force`.
+9. Ask the agent to wait for `results/report.md`, then upload that file from
+   a second machine: the agent's `gcd watch --json --disk <name> --until ...`
+   ends by itself within about a poll interval, and no gcd watch keeps
+   running afterwards (`ps`).
+10. Revoke the token and ask for a status: the agent reports an `auth` error
+    and gives `gcd login <you>/gcd-plugin-test` to run in your terminal.
+11. Comment the results, including anything not verified, on #26. Then
+    delete the test repo and revoke the token.

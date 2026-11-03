@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: restore-deleted-file
+expected_outcome: |
+  The agent looks up the history (`gcd log --json`), restores ideas.md with
+  `gcd restore --json`, and reminds the user, in Chinese, that the next sync
+  uploads it to the other machines. It does not sync by itself.
+context:
+  scaffold_script: setup.sh

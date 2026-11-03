@@ -1,0 +1,12 @@
+{
+  "name": "gcd",
+  "version": "0.1.0-rc2",
+  "description": "Let Claude operate gcd (GitHub Cloud Disk) safely: status, sync, history, restore and waiting for files from other machines.",
+  "author": {
+    "name": "Hanson-Tsai",
+    "url": "https://github.com/Hanson-Tsai"
+  },
+  "homepage": "https://github.com/Hanson-Tsai/gcd",
+  "repository": "https://github.com/Hanson-Tsai/gcd",
+  "keywords": ["gcd", "sync", "cloud-disk", "github"]
+}

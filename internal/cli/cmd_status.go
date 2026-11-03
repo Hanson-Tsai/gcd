@@ -8,9 +8,10 @@ import (
 func init() {
 	register(command{
 		name:    "status",
-		usage:   "status [--disk <name>]",
+		usage:   "status [--disk <name>] [--json]",
 		summary: "show what the next sync would upload, download and leave alone",
 		run:     runStatus,
+		json:    true,
 	})
 }
 
@@ -18,19 +19,25 @@ func init() {
 // folder, the remote nor the base, and it does not wait for a running sync.
 func runStatus(ctx context.Context, e *env, args []string) error {
 	fs := newDiskFlags(e, "status")
+	jsonFlag(fs, e)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return errUsage
 	}
-	d, _, err := openCurrentDisk(e)
+	d, ent, err := openCurrentDisk(e)
 	if err != nil {
 		return err
 	}
 	res, err := d.Status(ctx)
 	if err != nil {
 		return err
+	}
+	if e.json {
+		out := newResultJSON(ent.Name, res)
+		out.WorkflowVersion = ptr(res.WorkflowVersion)
+		return writeJSON(e.stdout, out)
 	}
 	for _, c := range res.Uploaded {
 		fmt.Fprintf(e.stdout, "up    %s %s\n", sign(c.Kind), c.Path)

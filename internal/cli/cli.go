@@ -26,6 +26,9 @@ type command struct {
 	run     func(ctx context.Context, e *env, args []string) error
 	// withoutGit skips the system git check for commands that never run git.
 	withoutGit bool
+	// json: the command takes --json (see json.go), so its failures are
+	// printed as a JSON error object on stdout when --json is given.
+	json bool
 }
 
 var commands = map[string]command{}
@@ -36,6 +39,7 @@ func register(c command) { commands[c.name] = c }
 type env struct {
 	stdout, stderr io.Writer
 	disk           string // --disk, set by FlagSets from newDiskFlags
+	json           bool   // --json, set by FlagSets from jsonFlag
 }
 
 // errUsage marks errors that should print the command's usage.
@@ -55,10 +59,20 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		printUsage(stderr)
 		return 2
 	}
+	// fail reports err (exit 1): a JSON error object on stdout under --json,
+	// else a message on stderr.
+	fail := func(err error) int {
+		if c.json && (e.json || wantsJSON(args[1:])) {
+			if werr := writeJSON(stdout, errorJSON{Error: newErrorBody(err)}); werr == nil {
+				return 1
+			}
+		}
+		fmt.Fprintln(stderr, "gcd:", err)
+		return 1
+	}
 	if !c.withoutGit {
 		if err := gitstore.CheckVersion(); err != nil {
-			fmt.Fprintln(stderr, "gcd:", err)
-			return 1
+			return fail(err)
 		}
 	}
 	if err := c.run(ctx, e, args[1:]); err != nil {
@@ -66,8 +80,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "usage: gcd %s\n", c.usage)
 			return 2
 		}
-		fmt.Fprintln(stderr, "gcd:", explain(err))
-		return 1
+		return fail(explain(err))
 	}
 	return 0
 }

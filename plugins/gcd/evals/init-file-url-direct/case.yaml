@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: init-file-url-direct
+expected_outcome: |
+  The repo is a local bare repo, so the agent runs
+  `gcd init file://<absolute path>/test-remote.git ./playground` itself (no
+  token involved) and confirms the Disk works, for example with gcd status.
+context:
+  scaffold_script: setup.sh

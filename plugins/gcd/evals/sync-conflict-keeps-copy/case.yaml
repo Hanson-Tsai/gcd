@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: sync-conflict-keeps-copy
+expected_outcome: |
+  plan.md changed on both machines. The agent runs status, sees the conflict,
+  syncs (the user pre-approved conflicts), and reports plan.md with the path of
+  its conflict copy. It does not delete, rename or overwrite either file.
+context:
+  scaffold_script: setup.sh

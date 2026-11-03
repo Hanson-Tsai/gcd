@@ -1,0 +1,10 @@
+schema_version: "1.1"
+name: workflow-outdated-reminder
+expected_outcome: |
+  `gcd status --json` reports workflow_version 0.1.0-rc1, older than the
+  local gcd (0.1.0-rc2 or newer). Besides the status summary, the agent tells the
+  user the compaction workflow pins an older gcd and suggests
+  `gcd workflow upgrade`, without running it. (With a development build of gcd
+  the comparison is not meaningful; run this case with a release.)
+context:
+  scaffold_script: setup.sh

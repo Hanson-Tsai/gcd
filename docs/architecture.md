@@ -9,7 +9,7 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | Package | Role | Status |
 |---|---|---|
 | `cmd/gcd` | `main`: wires signals and calls `cli.Run` | done |
-| `internal/cli` | Subcommands, standard-library `flag` only. One file per command (`cmd_<name>.go`) that calls `register(...)` from `init()`; `cli.go` holds dispatch, the git version check and `openCurrentDisk` | `init`, `login`, `sync`, `watch`, `status`, `log`, `restore`, `compact`, `workflow upgrade`, `config edit`, `version` |
+| `internal/cli` | Subcommands, standard-library `flag` only. One file per command (`cmd_<name>.go`) that calls `register(...)` from `init()`; `cli.go` holds dispatch, the git version check and `openCurrentDisk`; `json.go` holds the `--json` output layer (see below) | `init`, `login`, `sync`, `watch`, `status`, `log`, `restore`, `compact`, `workflow upgrade`, `config edit`, `version` |
 | `internal/disk` | **Seam A.** `Open(Options)` / `Sync(ctx, SyncOptions) (Result, error)` / `Status(ctx) (Result, error)`. Orchestrates one sync, owns the local state file (`state.go`), names conflict copies | full three-way sync (#4) |
 | `internal/scan` | Walk the folder and produce path → git blob hash plus size and mtime, applying the file rules: ignore rules, file-name policy, size limit, regular files only (`Rules`, `Result.Rejected`). `Result.Exclude` applies them to remote/base paths; `Collisions` finds case collisions | done (#6) |
 | `internal/reconcile` | Pure three-way rules: `Reconcile(base, local, remote) []Action` | done (#4) |
@@ -177,12 +177,21 @@ Exec bits are never synced: trees get only `100644` entries and downloads are wr
 - Risk: the Actions token has no Workflows permission and compaction re-creates commits touching the workflow file. If GitHub refuses (`refusing to allow a GitHub App to create or update workflow`), `explain` (when `GITHUB_ACTIONS=true`) tells the user to add the repository secret `GCD_TOKEN` or use `gcd compact --local`. Unverified on real GitHub: `docs/manual-verification.md` #15 step 1.
 - Fake GitHub (`authtest`): `Grant.WorkflowsWrite` enforced by a pre-receive hook that checks every pushed commit; dispatches succeed when the repo has `.github/workflows/<id>` on the ref and are recorded (`Dispatches()`); `NoRunDetails` answers 204. CLI tests swap releases and the version with `cli.UseReleases`.
 
+## JSON output and the Claude Code plugin (#18)
+
+- `--json` (`status`, `sync`, `log`, `restore`, `version`, `watch`) is a CLI concern only: `internal/cli/json.go` turns `disk.Result`, `disk.LogEntry`, `disk.RestoreResult` and `watch.Event` into the objects documented in `docs/json.md`. The packages below `cli` know nothing about JSON. The contract is additive only; `docs/json.md` and `json.go` change together.
+- A command opts in with `command.json`. `cli.Run` then prints any failure as `{"error":{"kind","message"}}` on stdout (exit code unchanged); `errorKind` maps sentinel errors to kinds: `disk.ErrMassDelete` → `needs_confirm`, `disk.ErrAlreadySyncing` → `busy`, `gitstore.ErrAuth` / `auth.ErrNoToken` / … → `auth`, `registry.ErrNoDisk` → `no_disk`, `config.ErrFormatTooNew` → `format_too_new`, `disk.ErrExists` → `exists`. A new failure that an agent must tell apart needs a sentinel (or `Is` method) and a kind.
+- `disk.Status` also reads the remote's compaction workflow (`Result.WorkflowVersion`) from the tree it already fetched, so `status` stays read-only.
+- `gcd watch --until <path>` lives in `cli`: the `Report` callback looks for the path in `Synced` events' `Downloaded` and cancels the context it passed to `watch.Run`, which then returns after the sync that downloaded it.
+- The repo root is a Claude Code marketplace (`.claude-plugin/marketplace.json`, name `skills`) listing the plugin in `plugins/gcd/`: the skill `skills/gcd/` (`SKILL.md` with the shared rules, `references/{sync,history,watch,setup}.md` per flow), the slash commands in `commands/` (thin wrappers around the skill) and the offline evals in `evals/` (`claude plugin eval` layout, fixture `evals/lib/world.sh`). The plugin's `version` is the gcd release it was written for.
+
 ## Testing
 
 - **Seam A**: `internal/disk` tests through `fixture.NewDevices(t, n)`. Each device has its own folder, state dir and injectable `Host`. Assertions use `Device.Files` / `AssertFiles`, `Remote.Files` / `AssertFiles` and `Remote.Log`.
 - **Seam B**: `internal/compact` tests run `compact.Run` on `fixture.NewRemote` repos built with `Remote.CommitAt` (chosen commit times) and a fixed `Now`. `compact/sync_test.go` checks Seam A devices across a compaction.
 - CLI: smoke tests only (`internal/cli`). They use `GCD_HOME` to simulate separate machines. GitHub flows use `cli.UseFakeGitHub(t, authtest.GitHub{...}.Start(t), keyring, stdin)` (in `export_test.go`); the fake serves real bare repos over smart HTTP, so `init owner/repo` and `sync` with a token run offline.
 - Real-GitHub tests are opt-in: `TestE2E*` skip unless `GCD_E2E_REPO` and `GCD_TOKEN` are set; the **E2E** workflow runs them on manual dispatch only. See `docs/manual-verification.md`.
+- The plugin's offline evals are model runs, not part of `go test`: see `plugins/gcd/evals/README.md`.
 - Tests run offline and must pass on macOS, Linux and Windows (CI matrix in `.github/workflows/ci.yml`).
 
 ## Watch (#16, `internal/watch`)

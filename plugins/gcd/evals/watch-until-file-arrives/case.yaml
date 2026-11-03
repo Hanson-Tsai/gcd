@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: watch-until-file-arrives
+expected_outcome: |
+  The agent runs `gcd watch --json --disk notes --until results/report.md` (in
+  the background or with a long timeout). Once the file is downloaded the watch
+  ends by itself, and the agent reports the first line: "TOTAL: 42". No watch is
+  left running.
+context:
+  scaffold_script: setup.sh

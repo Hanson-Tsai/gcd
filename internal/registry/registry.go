@@ -163,34 +163,75 @@ func (r *Registry) Save() error {
 	return apply.WriteFile(r.file(), strings.NewReader(string(b)+"\n"))
 }
 
+// ErrNoDisk matches the errors of Resolve, Named and CheckAny: no Disk is
+// registered, none has the given name, or the current directory is in none
+// (and there is more than one).
+var ErrNoDisk = errors.New("no disk")
+
+// noDiskError is an ErrNoDisk with its own message.
+type noDiskError struct{ msg string }
+
+func (e *noDiskError) Error() string        { return e.msg }
+func (e *noDiskError) Is(target error) bool { return target == ErrNoDisk }
+
+func noDisk(format string, a ...any) error { return &noDiskError{msg: fmt.Sprintf(format, a...)} }
+
+// errNoneRegistered is returned when the registry is empty.
+var errNoneRegistered = noDisk("no disk registered; run `gcd init <git-url> <folder>` first")
+
+// CheckAny returns an ErrNoDisk error when no Disk is registered.
+func (r *Registry) CheckAny() error {
+	if len(r.Disks) == 0 {
+		return errNoneRegistered
+	}
+	return nil
+}
+
+// Containing returns the Disk whose folder is cwd or contains it.
+func (r *Registry) Containing(cwd string) (Entry, bool) {
+	for _, d := range r.Disks {
+		if contains(d.Folder, cwd) {
+			return d, true
+		}
+	}
+	return Entry{}, false
+}
+
+// Named returns the Disk called name (ignoring case), or an ErrNoDisk error
+// listing the registered Disks.
+func (r *Registry) Named(name string) (Entry, error) {
+	if err := r.CheckAny(); err != nil {
+		return Entry{}, err
+	}
+	for _, d := range r.Disks {
+		if strings.EqualFold(d.Name, name) {
+			return d, nil
+		}
+	}
+	return Entry{}, noDisk("no disk named %q; registered disks:\n%s", name, r.list())
+}
+
 // Resolve picks the Disk a command operates on:
 //
 //  1. the Disk called name, when name is set (the --disk flag);
 //  2. else the Disk whose folder is cwd or contains it;
 //  3. else the only registered Disk.
 //
-// Otherwise the error lists the registered Disks.
+// Otherwise the error (an ErrNoDisk) lists the registered Disks.
 func (r *Registry) Resolve(cwd, name string) (Entry, error) {
-	if len(r.Disks) == 0 {
-		return Entry{}, errors.New("no disk registered; run `gcd init <git-url> <folder>` first")
+	if err := r.CheckAny(); err != nil {
+		return Entry{}, err
 	}
 	if name != "" {
-		for _, d := range r.Disks {
-			if strings.EqualFold(d.Name, name) {
-				return d, nil
-			}
-		}
-		return Entry{}, fmt.Errorf("no disk named %q; registered disks:\n%s", name, r.list())
+		return r.Named(name)
 	}
-	for _, d := range r.Disks {
-		if contains(d.Folder, cwd) {
-			return d, nil
-		}
+	if d, ok := r.Containing(cwd); ok {
+		return d, nil
 	}
 	if len(r.Disks) == 1 {
 		return r.Disks[0], nil
 	}
-	return Entry{}, fmt.Errorf("not inside a disk folder; cd into one or pass --disk <name>:\n%s", r.list())
+	return Entry{}, noDisk("not inside a disk folder; cd into one or pass --disk <name>:\n%s", r.list())
 }
 
 // list formats the registered Disks one per line for error messages.

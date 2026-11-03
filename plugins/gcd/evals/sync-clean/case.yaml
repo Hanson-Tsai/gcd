@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: sync-clean
+expected_outcome: |
+  The agent runs `gcd status --json` first. There are only additions and
+  modifications, so it runs `gcd sync --json` without asking and without --yes,
+  then reports that report.md was uploaded and todo.md downloaded.
+context:
+  scaffold_script: setup.sh

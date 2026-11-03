@@ -10,10 +10,25 @@ import (
 func init() {
 	register(command{
 		name:    "log",
-		usage:   "log [path]",
+		usage:   "log [path] [--disk <name>] [--json]",
 		summary: "show the sync history of the disk or of one path",
 		run:     runLog,
+		json:    true,
 	})
+}
+
+// logJSON is the object of `log --json`.
+type logJSON struct {
+	Disk    string         `json:"disk"`
+	Path    string         `json:"path"` // "" for the whole Disk
+	Entries []logEntryJSON `json:"entries"`
+}
+
+type logEntryJSON struct {
+	Commit  string       `json:"commit"`
+	Time    string       `json:"time"`
+	Host    string       `json:"host"`
+	Changes []changeJSON `json:"changes"`
 }
 
 // timeFormat prints history times in a form `gcd restore --at` accepts.
@@ -21,6 +36,7 @@ const timeFormat = "2006-01-02 15:04:05"
 
 func runLog(ctx context.Context, e *env, args []string) error {
 	fs := newDiskFlags(e, "log")
+	jsonFlag(fs, e)
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
@@ -28,7 +44,7 @@ func runLog(ctx context.Context, e *env, args []string) error {
 	if len(pos) > 1 {
 		return errUsage
 	}
-	d, _, err := openCurrentDisk(e)
+	d, ent, err := openCurrentDisk(e)
 	if err != nil {
 		return err
 	}
@@ -41,6 +57,13 @@ func runLog(ctx context.Context, e *env, args []string) error {
 	log, err := d.Log(ctx, rel)
 	if err != nil {
 		return err
+	}
+	if e.json {
+		out := logJSON{Disk: ent.Name, Path: rel, Entries: []logEntryJSON{}}
+		for _, l := range log {
+			out.Entries = append(out.Entries, logEntryJSON{Commit: l.Commit, Time: jsonTime(l.Time), Host: l.Host, Changes: changesJSON(l.Changes)})
+		}
+		return writeJSON(e.stdout, out)
 	}
 	if len(log) == 0 {
 		if rel == "" {

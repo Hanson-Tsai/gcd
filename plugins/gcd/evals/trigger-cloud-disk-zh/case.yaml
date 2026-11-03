@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: trigger-cloud-disk-zh
+expected_outcome: |
+  The agent recognizes the cloud disk as gcd, checks the gcd version, runs
+  `gcd status --json` for the notes Disk and answers in Chinese: mine.md would be
+  uploaded, theirs.md downloaded, and a:b.txt is not synced because Windows does
+  not allow ':' in names. It does not sync.
+context:
+  scaffold_script: setup.sh
