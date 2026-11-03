@@ -44,7 +44,7 @@ func runWatch(ctx context.Context, e *env, args []string) error {
 		return errors.New("no disk registered; run `gcd init <git-url> <folder>` first")
 	}
 
-	p := &watchPrinter{e: e, folders: map[string]string{}}
+	p := &watchPrinter{e: e, folders: map[string]string{}, rejected: map[string]map[string]bool{}}
 	var targets []watch.Target
 	for _, ent := range reg.Disks {
 		d, err := openEntry(ent)
@@ -75,6 +75,8 @@ func runWatch(ctx context.Context, e *env, args []string) error {
 type watchPrinter struct {
 	e       *env
 	folders map[string]string // disk name -> folder
+	// rejected: disk name -> rejections the last sync reported (printed)
+	rejected map[string]map[string]bool
 
 	mu sync.Mutex
 }
@@ -108,6 +110,16 @@ func (p *watchPrinter) event(ev watch.Event) {
 		for _, s := range res.Skipped {
 			p.line(out, name, "skipped %s: changed during sync, next sync picks it up", s)
 		}
+		// Every sync lists every rejected file; show each one once.
+		seen := map[string]bool{}
+		for _, r := range res.Rejected {
+			msg := r.String()
+			seen[msg] = true
+			if !p.rejected[name][msg] {
+				p.line(out, name, "not synced %s", msg)
+			}
+		}
+		p.rejected[name] = seen
 	case watch.NeedsConfirm:
 		p.line(errOut, name, "warning: %v\n  nothing was synced; if these deletions are intended, run `gcd sync --disk %s --yes`", ev.Err, name)
 	case watch.Busy:
