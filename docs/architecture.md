@@ -79,6 +79,12 @@ Hooks later tickets plug into: the mass-delete check goes between reconcile and 
 - `disk.RepoConfig` / `SetRepoConfig` / `EnsureRepoConfig` read and commit the config as a single-file commit on top of the remote head (fast-forward push, `ErrRemoteChanged` if the remote moved). `gcd init` calls `EnsureRepoConfig`. `gcd config edit` opens `$EDITOR` and commits only if `ParseStrict` accepts the file, which also rejects unknown keys.
 - Bump `config.Format` only when the repo layout or meaning changes.
 
+## Mass-delete guard (#7, `disk/massdelete.go`)
+
+- Checked in `Disk.round` right after reconcile, before conflict naming, commit and push, so it re-runs on every retry. Deletions on both sides count together (`DeleteRemote` + `DeleteLocal`); the percentage is of the base (last synced) files, managed paths excluded.
+- A sync needs confirmation when it deletes more than `mass_delete_count` files, or more than `mass_delete_percent` % of the base files **and** more than 5 files (`minPercentDeletes`, so removing a file or two from a small folder never asks).
+- Without `SyncOptions.Yes` it stops with `ErrMassDelete`, `Result.NeedsConfirm` and `Result.PendingDeletes`; the remote and the folder are untouched. The CLI adds the `gcd sync --yes` hint; `gcd watch` (#29 story) should report it as a warning and not pass `Yes`.
+
 ## History: `gcd log` / `gcd restore` (`disk/history.go`)
 
 - `Disk.Log(ctx, path)` fetches, then lists the remote's first-parent history newest first (`gitstore.History`, one `git log --name-status` call). Paths are matched literally (`GIT_LITERAL_PATHSPECS=1`); a directory path matches everything below it.

@@ -36,9 +36,12 @@ type Options struct {
 	Host     string // machine name used as commit author; default: os.Hostname
 }
 
-// SyncOptions tunes a single Sync. Later tickets add fields (e.g. Yes for
-// confirming mass deletions, #7).
-type SyncOptions struct{}
+// SyncOptions tunes a single Sync.
+type SyncOptions struct {
+	// Yes confirms a mass deletion: the sync runs even when it deletes more
+	// files than the repo config's mass-delete thresholds allow.
+	Yes bool
+}
 
 // ChangeKind classifies a change to one path.
 type ChangeKind int
@@ -79,6 +82,11 @@ type Result struct {
 	// FormatTooNew: the repo format is newer than this gcd supports; the sync
 	// stopped before changing anything (the error is a *config.FormatError).
 	FormatTooNew bool
+	// NeedsConfirm: the sync would delete PendingDeletes files (on either
+	// side), more than the repo config allows without SyncOptions.Yes. It
+	// stopped before pushing or touching the folder (error ErrMassDelete).
+	NeedsConfirm   bool
+	PendingDeletes int
 }
 
 // Conflict is a path both sides changed to different content. The remote
@@ -158,7 +166,7 @@ var ErrRemoteChanging = errors.New("remote kept changing during sync; gave up pu
 
 // Sync runs one full sync. See the package doc for the steps. It returns
 // ErrAlreadySyncing at once when another Sync of the same Disk is running.
-func (d *Disk) Sync(ctx context.Context, _ SyncOptions) (Result, error) {
+func (d *Disk) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	unlock, err := d.lock()
 	if err != nil {
 		return Result{}, err
@@ -176,7 +184,7 @@ func (d *Disk) Sync(ctx context.Context, _ SyncOptions) (Result, error) {
 
 	var r round
 	for n := 1; ; n++ {
-		r, err = d.round(ctx, st, local)
+		r, err = d.round(ctx, st, local, opts)
 		if err == nil {
 			break
 		}
@@ -216,7 +224,7 @@ type round struct {
 // is something to upload, commits on top of the remote head and pushes. A push
 // that lost to another device fails with gitstore.ErrPushRejected; at that
 // point nothing outside the git-dir has changed, so the caller can retry.
-func (d *Disk) round(ctx context.Context, st state, local scan.Result) (round, error) {
+func (d *Disk) round(ctx context.Context, st state, local scan.Result, opts SyncOptions) (round, error) {
 	var r round
 	res := &r.res
 	remoteHead, err := d.store.Fetch(ctx)
@@ -233,7 +241,8 @@ func (d *Disk) round(ctx context.Context, st state, local scan.Result) (round, e
 	if err != nil {
 		return r, err
 	}
-	if _, err := d.repoConfig(ctx, remote); err != nil {
+	cfg, err := d.repoConfig(ctx, remote)
+	if err != nil {
 		res.FormatTooNew = errors.Is(err, config.ErrFormatTooNew)
 		return r, err
 	}
@@ -242,8 +251,12 @@ func (d *Disk) round(ctx context.Context, st state, local scan.Result) (round, e
 		return r, fmt.Errorf("read base tree: %w", err)
 	}
 
-	localFiles, remoteFiles := localHashes(local), treeHashes(remote)
-	plan := reconcile.Reconcile(treeHashes(base), localFiles, remoteFiles)
+	baseFiles, localFiles, remoteFiles := treeHashes(base), localHashes(local), treeHashes(remote)
+	plan := reconcile.Reconcile(baseFiles, localFiles, remoteFiles)
+	if n, err := checkMassDelete(plan, len(baseFiles), cfg); err != nil && !opts.Yes {
+		res.NeedsConfirm, res.PendingDeletes = true, n
+		return r, err
+	}
 	d.nameConflictCopies(plan, localFiles, remoteFiles)
 	for _, a := range plan {
 		switch a.Op {
