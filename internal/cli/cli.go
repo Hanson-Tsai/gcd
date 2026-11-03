@@ -35,6 +35,7 @@ func register(c command) { commands[c.name] = c }
 // env carries the process environment into commands.
 type env struct {
 	stdout, stderr io.Writer
+	disk           string // --disk, set by FlagSets from newDiskFlags
 }
 
 // errUsage marks errors that should print the command's usage.
@@ -92,8 +93,18 @@ func newFlags(e *env, name string) *flag.FlagSet {
 	return fs
 }
 
-// openCurrentDisk resolves the Disk for the current directory and opens it.
-func openCurrentDisk() (*disk.Disk, registry.Entry, error) {
+// newDiskFlags is newFlags plus --disk <name>, stored in e.disk. Commands
+// that operate on a Disk use it together with openCurrentDisk(e).
+func newDiskFlags(e *env, name string) *flag.FlagSet {
+	fs := newFlags(e, name)
+	fs.StringVar(&e.disk, "disk", "",
+		"operate on the disk with this `name` (default: the disk containing the current directory, or the only disk)")
+	return fs
+}
+
+// openCurrentDisk opens the Disk a command operates on: the one named by
+// --disk, else the one containing the current directory, else the only one.
+func openCurrentDisk(e *env) (*disk.Disk, registry.Entry, error) {
 	home, err := registry.Home()
 	if err != nil {
 		return nil, registry.Entry{}, err
@@ -106,7 +117,7 @@ func openCurrentDisk() (*disk.Disk, registry.Entry, error) {
 	if err != nil {
 		return nil, registry.Entry{}, err
 	}
-	ent, err := reg.Resolve(cwd)
+	ent, err := reg.Resolve(cwd, e.disk)
 	if err != nil {
 		return nil, ent, err
 	}

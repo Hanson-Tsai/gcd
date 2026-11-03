@@ -15,7 +15,7 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | `internal/reconcile` | Pure three-way rules: `Reconcile(base, local, remote) []Action` | done (#4) |
 | `internal/gitstore` | Wraps system git (≥ 2.30) on a bare git-dir: fetch, read tree, write blobs/tree/commit, push | done for #2 |
 | `internal/apply` | Atomic writes to the folder (temp file + rename), local deletes, conflict copies (`CopyName`, rename local file aside) | basic + conflicts |
-| `internal/registry` | Per-machine Disk list (`registry.json`) and "which Disk am I in" | minimal (#11) |
+| `internal/registry` | Per-machine Disk list (`registry.json`) and "which Disk am I in": `--disk <name>`, else the Disk containing cwd (matched by file identity), else the only Disk | done |
 | `internal/fixture` | Seam A test fixture: `file://` bare remote + N devices | done |
 | `internal/config`, `compact`, `auth`, `watch`, `workflow` | Not created yet; add them when their ticket lands (#3, #12, #13, #16, #15) | — |
 

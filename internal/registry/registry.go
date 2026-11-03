@@ -6,7 +6,9 @@
 //	registry.json        the Disk list
 //	disks/<name>/        per-Disk state dir: state.json and git/ (the git-dir)
 //
-// Named Disks, --disk and case-insensitive path matching are ticket #11.
+// Disk names are unique ignoring case and Disk folders never overlap (no
+// Disk inside another). Folders are matched by file identity, so letter case
+// on case-insensitive file systems and symlinked parents do not matter.
 package registry
 
 import (
@@ -92,14 +94,71 @@ func (r *Registry) StateDirFor(name string) string {
 	return filepath.Join(r.home, "disks", name)
 }
 
-// Add registers e, refusing a duplicate name or folder.
-func (r *Registry) Add(e Entry) error {
-	for _, d := range r.Disks {
-		if d.Name == e.Name {
-			return fmt.Errorf("a disk named %q already exists (%s)", e.Name, d.Folder)
+// CheckName validates a Disk name. A name is typed after --disk and is also
+// a directory under the gcd home, so it is 1-64 ASCII letters, digits, '.',
+// '_' or '-', starts with a letter or digit, does not end with '.', and is
+// not a Windows reserved device name.
+func CheckName(name string) error {
+	bad := func(why string) error {
+		return fmt.Errorf("invalid disk name %q: %s", name, why)
+	}
+	switch {
+	case name == "":
+		return bad("empty")
+	case len(name) > 64:
+		return bad("longer than 64 characters")
+	case !isAlnum(name[0]):
+		return bad("must start with a letter or digit")
+	case strings.HasSuffix(name, "."):
+		return bad("must not end with '.'")
+	}
+	for i := 0; i < len(name); i++ {
+		if c := name[i]; !isAlnum(c) && c != '.' && c != '_' && c != '-' {
+			return bad("use only letters, digits, '.', '_' and '-'")
 		}
-		if d.Folder == e.Folder {
+	}
+	if windowsReserved(name) {
+		return bad("reserved on Windows")
+	}
+	return nil
+}
+
+func isAlnum(c byte) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
+}
+
+// windowsReserved reports whether name (before any extension) is a DOS
+// device name such as CON or COM1.
+func windowsReserved(name string) bool {
+	base, _, _ := strings.Cut(strings.ToUpper(name), ".")
+	switch base {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	return len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) &&
+		'0' <= base[3] && base[3] <= '9'
+}
+
+// Add registers e. It refuses a name already taken (ignoring case, since the
+// name is also a directory under the gcd home) and a folder that is, contains
+// or lies inside another Disk's folder.
+func (r *Registry) Add(e Entry) error {
+	if err := CheckName(e.Name); err != nil {
+		return err
+	}
+	for _, d := range r.Disks {
+		if strings.EqualFold(d.Name, e.Name) {
+			return fmt.Errorf("a disk named %q already exists (%s)", d.Name, d.Folder)
+		}
+	}
+	for _, d := range r.Disks {
+		switch {
+		case contains(d.Folder, e.Folder) && contains(e.Folder, d.Folder):
 			return fmt.Errorf("%s is already disk %q", e.Folder, d.Name)
+		case contains(d.Folder, e.Folder):
+			return fmt.Errorf("%s is inside disk %q (%s)", e.Folder, d.Name, d.Folder)
+		case contains(e.Folder, d.Folder):
+			return fmt.Errorf("%s contains disk %q (%s)", e.Folder, d.Name, d.Folder)
 		}
 	}
 	r.Disks = append(r.Disks, e)
@@ -115,24 +174,45 @@ func (r *Registry) Save() error {
 	return apply.WriteFile(r.file(), strings.NewReader(string(b)+"\n"))
 }
 
-// Resolve picks the Disk whose folder contains cwd; failing that, the only
-// registered Disk.
-func (r *Registry) Resolve(cwd string) (Entry, error) {
+// Resolve picks the Disk a command operates on:
+//
+//  1. the Disk called name, when name is set (the --disk flag);
+//  2. else the Disk whose folder is cwd or contains it;
+//  3. else the only registered Disk.
+//
+// Otherwise the error lists the registered Disks.
+func (r *Registry) Resolve(cwd, name string) (Entry, error) {
+	if len(r.Disks) == 0 {
+		return Entry{}, errors.New("no disk registered; run `gcd init <git-url> <folder>` first")
+	}
+	if name != "" {
+		for _, d := range r.Disks {
+			if strings.EqualFold(d.Name, name) {
+				return d, nil
+			}
+		}
+		return Entry{}, fmt.Errorf("no disk named %q; registered disks:\n%s", name, r.list())
+	}
 	for _, d := range r.Disks {
-		if rel, err := filepath.Rel(d.Folder, cwd); err == nil &&
-			(rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+		if contains(d.Folder, cwd) {
 			return d, nil
 		}
 	}
-	switch len(r.Disks) {
-	case 0:
-		return Entry{}, errors.New("no disk registered; run `gcd init <git-url> <folder>` first")
-	case 1:
+	if len(r.Disks) == 1 {
 		return r.Disks[0], nil
 	}
-	names := make([]string, len(r.Disks))
-	for i, d := range r.Disks {
-		names[i] = d.Name + " (" + d.Folder + ")"
+	return Entry{}, fmt.Errorf("not inside a disk folder; cd into one or pass --disk <name>:\n%s", r.list())
+}
+
+// list formats the registered Disks one per line for error messages.
+func (r *Registry) list() string {
+	width := 0
+	for _, d := range r.Disks {
+		width = max(width, len(d.Name))
 	}
-	return Entry{}, fmt.Errorf("not inside a disk folder; disks: %s", strings.Join(names, ", "))
+	var b strings.Builder
+	for _, d := range r.Disks {
+		fmt.Fprintf(&b, "  %-*s  %s\n", width, d.Name, d.Folder)
+	}
+	return strings.TrimSuffix(b.String(), "\n")
 }
