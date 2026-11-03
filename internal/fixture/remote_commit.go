@@ -2,13 +2,14 @@ package fixture
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
+
+	"github.com/Hanson-Tsai/gcd/internal/gitstore"
 )
 
 // Commit writes files (slash-separated path -> content) on top of the
@@ -38,26 +39,8 @@ func (r *Remote) Mode(t testing.TB, path string) string {
 
 func (r *Remote) commit(t testing.TB, files, modes map[string]string, msg string) string {
 	t.Helper()
-	index := filepath.Join(tempDir(t), "index")
-	env := []string{"GIT_INDEX_FILE=" + index}
 	head := r.Head(t)
-	if head != "" {
-		r.gitEnv(t, env, "", "read-tree", head)
-	}
-	paths := make([]string, 0, len(files))
-	for p := range files {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-	for _, p := range paths {
-		blob := strings.TrimSpace(r.gitEnv(t, nil, files[p], "hash-object", "-w", "--no-filters", "--stdin"))
-		mode := modes[p]
-		if mode == "" {
-			mode = "100644"
-		}
-		r.gitEnv(t, env, "", "update-index", "--add", "--cacheinfo", mode+","+blob+","+p)
-	}
-	tree := strings.TrimSpace(r.gitEnv(t, env, "", "write-tree"))
+	tree := r.tree(t, head, files, modes, nil)
 	args := []string{"commit-tree", tree, "-m", msg}
 	if head != "" {
 		args = append(args, "-p", head)
@@ -71,17 +54,48 @@ func (r *Remote) commit(t testing.TB, files, modes map[string]string, msg string
 	return commit
 }
 
+// tree returns the tree of head with files (path -> content; mode from modes,
+// default 100644) written and the del paths removed. Like gcd, it builds the
+// tree without an index, which would refuse names tests plant on purpose
+// (Git for Windows refuses "a:b.txt" in an index whatever its config).
+func (r *Remote) tree(t testing.TB, head string, files, modes map[string]string, del []string) string {
+	t.Helper()
+	ctx := context.Background()
+	s := &gitstore.Store{GitDir: r.Dir}
+	entries := map[string]gitstore.Entry{}
+	if head != "" {
+		tree, err := s.TreeOf(ctx, head)
+		if err == nil {
+			entries, err = s.ReadTree(ctx, tree)
+		}
+		if err != nil {
+			t.Fatalf("read tree of %s: %v", head, err)
+		}
+	}
+	for p, content := range files {
+		blob := strings.TrimSpace(r.gitEnv(t, nil, content, "hash-object", "-w", "--no-filters", "--stdin"))
+		mode := modes[p]
+		if mode == "" {
+			mode = gitstore.RegularMode
+		}
+		entries[p] = gitstore.Entry{Mode: mode, Hash: blob}
+	}
+	for _, p := range del {
+		delete(entries, p)
+	}
+	tree, err := s.WriteTree(ctx, entries)
+	if err != nil {
+		t.Fatalf("write tree: %v", err)
+	}
+	return tree
+}
+
 // gitEnv runs git against the bare remote with extra env and stdin.
 func (r *Remote) gitEnv(t testing.TB, env []string, stdin string, args ...string) string {
 	t.Helper()
 	// Keep paths byte-exact: git on macOS would otherwise turn NFD names
-	// into NFC ones, and tests need to plant both. Tests also plant names
-	// git's index guards refuse (e.g. "a:b.txt" on Windows); nothing here is
-	// ever checked out, so the guards are off.
-	pre := []string{
-		"--git-dir=" + r.Dir, "-c", "core.precomposeunicode=false",
-		"-c", "core.protectNTFS=false", "-c", "core.protectHFS=false",
-	}
+	// into NFC ones, and tests need to plant both.
+	pre := []string{"--git-dir=" + r.Dir, "-c", "core.precomposeunicode=false"}
 	cmd := exec.Command("git", append(pre, args...)...)
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin = strings.NewReader(stdin)

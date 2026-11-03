@@ -74,7 +74,7 @@ state.base_tree = new tree (or the remote tree when nothing was uploaded),
 Key invariants:
 
 - **The base is a tree hash, not a commit**, so history compaction (#12) does not invalidate it.
-- **No merge, rebase, pull, index or checkout.** gcd builds trees itself from a throwaway `GIT_INDEX_FILE` and `commit-tree`.
+- **No merge, rebase, pull, index or checkout.** gcd encodes tree objects itself (stored with `hash-object --literally -t tree`) and commits them with `commit-tree`. No index is involved, so names git refuses in an index (`a:b.txt` on Windows, `GIT~1`) still sync.
 - **All content is binary.** It goes through `hash-object --no-filters` and `cat-file blob`, and `core.autocrlf=false` is set in the git-dir. Local hashes are computed in Go (SHA-1 of `blob <n>\0<data>`), so they compare directly with tree entries.
 - **Three-way rules**: one-sided change wins; same content on both sides (incl. both deleted) is a no-op; edit beats delete; different edits → remote stays at the path, local is renamed to a conflict copy and uploaded. Copy names avoid every local/remote path case-insensitively and get ` 2`, ` 3`… inside the parentheses when taken. A sync interrupted after push but before apply loses nothing: the next sync reconciles it through the same rules (at worst leaving a duplicate copy).
 - Commits are created only when there are local changes to upload. A download-only sync makes no commit.

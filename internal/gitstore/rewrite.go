@@ -3,12 +3,8 @@ package gitstore
 import (
 	"bufio"
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -62,42 +58,12 @@ func (s *Store) ReadCommits(ctx context.Context, hashes []string) ([][]byte, err
 
 // CommitHash computes the hash git gives a raw commit object (SHA-1, the
 // object format of GitHub repos), without writing it.
-func CommitHash(raw []byte) string {
-	h := sha1.New()
-	fmt.Fprintf(h, "commit %d\x00", len(raw))
-	h.Write(raw)
-	return hex.EncodeToString(h.Sum(nil))
-}
+func CommitHash(raw []byte) string { return objectHash("commit", raw) }
 
 // WriteCommits stores raw commit objects in one hash-object process and
 // returns their hashes in order. git validates each object as it writes it.
 func (s *Store) WriteCommits(ctx context.Context, raws [][]byte) ([]string, error) {
-	if len(raws) == 0 {
-		return nil, nil
-	}
-	dir, err := os.MkdirTemp(s.GitDir, "gcd-commits-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(dir)
-	var in strings.Builder
-	for i, raw := range raws {
-		p := filepath.Join(dir, strconv.Itoa(i))
-		if err := os.WriteFile(p, raw, 0o644); err != nil {
-			return nil, err
-		}
-		in.WriteString(cQuote(p))
-		in.WriteByte('\n')
-	}
-	out, err := s.git(ctx, strings.NewReader(in.String()), "hash-object", "-t", "commit", "-w", "--no-filters", "--stdin-paths")
-	if err != nil {
-		return nil, err
-	}
-	hashes := strings.Fields(out)
-	if len(hashes) != len(raws) {
-		return nil, fmt.Errorf("hash-object returned %d hashes for %d commits", len(hashes), len(raws))
-	}
-	return hashes, nil
+	return s.writeObjects(ctx, "commit", raws)
 }
 
 // cQuote quotes a path the way --stdin-paths unquotes it, so Windows
