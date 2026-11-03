@@ -114,6 +114,18 @@ func TestTwoNamedDisksOnOneMachine(t *testing.T) {
 	}
 	m.gcd(t, "sync", "--disk", "docs")
 	docsRemote.AssertFiles(t, map[string]string{"d.txt": "doc"})
+
+	// log and restore take --disk too; restore paths are folder-relative here.
+	if out := m.gcd(t, "log", "--disk", "docs"); !strings.Contains(out, "+1 ~0 -0") {
+		t.Errorf("gcd log --disk docs = %q, want the docs sync", out)
+	}
+	if err := os.Remove(filepath.Join(docs, "d.txt")); err != nil {
+		t.Fatal(err)
+	}
+	m.gcd(t, "restore", "--disk", "docs", "d.txt")
+	if got, err := os.ReadFile(filepath.Join(docs, "d.txt")); err != nil || string(got) != "doc" {
+		t.Errorf("restore --disk docs d.txt: got %q, %v; want doc", got, err)
+	}
 }
 
 func TestDiskFlagOnlyOnDiskCommands(t *testing.T) {
@@ -133,6 +145,64 @@ func TestInitNamesDiskAfterFolderByDefault(t *testing.T) {
 	}
 	if msg := m.gcdFails(t, "init", remote.URL, filepath.Join(root, "my photos")); !strings.Contains(msg, "--disk") {
 		t.Errorf("init with an unusable folder name: %q, want a hint to pass --disk", msg)
+	}
+}
+
+func TestLogAndRestoreSmoke(t *testing.T) {
+	remote := fixture.NewRemote(t)
+	root := t.TempDir()
+	a := machine{home: filepath.Join(root, "a-home"), folder: filepath.Join(root, "a-folder")}
+	a.gcd(t, "init", remote.URL, a.folder)
+	file := filepath.Join(a.folder, "notes", "plan.md")
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.gcd(t, "sync")
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	a.gcd(t, "sync")
+
+	t.Chdir(a.folder)
+	if out := a.gcd(t, "log"); !strings.Contains(out, "+0 ~0 -1") || !strings.Contains(out, "+1 ~0 -0") {
+		t.Errorf("gcd log = %q, want one line per sync with its change summary", out)
+	}
+	added := remote.Log(t)[1].Hash
+	if out := a.gcd(t, "log", "notes/plan.md"); !strings.Contains(out, added[:7]) || !strings.Contains(out, "- notes/plan.md") {
+		t.Errorf("gcd log notes/plan.md = %q, want commit %s and the deletion", out, added[:7])
+	}
+
+	if msg := a.gcdFails(t, "restore", "notes/plan.md", "--at", "2000-01-01"); !strings.Contains(msg, "oldest version") {
+		t.Errorf("restore before history: stderr = %q, want retention error", msg)
+	}
+
+	// Flags may follow the path, and the path is relative to the cwd.
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Dir(file))
+	a.gcd(t, "restore", "plan.md", "--at", added[:7])
+	if got, err := os.ReadFile(file); err != nil || string(got) != "v1" {
+		t.Fatalf("restored file = %q, %v; want v1", got, err)
+	}
+
+	// A different local file is not overwritten without --force.
+	if err := os.WriteFile(file, []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if msg := a.gcdFails(t, "restore", "plan.md"); !strings.Contains(msg, "--force") {
+		t.Errorf("restore over existing file: stderr = %q, want a hint about --force", msg)
+	}
+	a.gcd(t, "restore", "--force", "plan.md")
+	if got, _ := os.ReadFile(file); string(got) != "v1" {
+		t.Fatalf("forced restore left %q, want v1", got)
+	}
+
+	if out := a.gcd(t, "sync"); !strings.Contains(out, "+ notes/plan.md") {
+		t.Errorf("sync after restore = %q, want upload of notes/plan.md", out)
 	}
 }
 
