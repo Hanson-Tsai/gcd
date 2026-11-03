@@ -44,6 +44,9 @@ func runSync(ctx context.Context, e *env, args []string) error {
 	for _, p := range res.Skipped {
 		fmt.Fprintf(e.stdout, "skipped %s: changed during sync, next sync picks it up\n", p)
 	}
+	for _, r := range res.Rejected {
+		fmt.Fprintf(e.stdout, "not synced %s\n", r)
+	}
 	if len(res.Uploaded)+len(res.Downloaded) == 0 {
 		fmt.Fprintln(e.stdout, "up to date")
 	} else {

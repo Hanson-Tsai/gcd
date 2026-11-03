@@ -11,7 +11,7 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | `cmd/gcd` | `main`: wires signals and calls `cli.Run` | done |
 | `internal/cli` | Subcommands, standard-library `flag` only. One file per command (`cmd_<name>.go`) that calls `register(...)` from `init()`; `cli.go` holds dispatch, the git version check and `openCurrentDisk` | `init`, `sync`, `config edit` |
 | `internal/disk` | **Seam A.** `Open(Options)` / `Sync(ctx, SyncOptions) (Result, error)`. Orchestrates one sync, owns the local state file (`state.go`), names conflict copies | full three-way sync (#4) |
-| `internal/scan` | Walk the folder and produce path → git blob hash plus size and mtime. Ignore rules, file-name policy and the large-file limit go here (#6) | regular files only |
+| `internal/scan` | Walk the folder and produce path → git blob hash plus size and mtime, applying the file rules: ignore rules, file-name policy, size limit, regular files only (`Rules`, `Result.Rejected`). `Result.Exclude` applies them to remote/base paths; `Collisions` finds case collisions | done (#6) |
 | `internal/reconcile` | Pure three-way rules: `Reconcile(base, local, remote) []Action` | done (#4) |
 | `internal/gitstore` | Wraps system git (≥ 2.30) on a bare git-dir: fetch, read tree, write blobs/tree/commit, push | done for #2 |
 | `internal/apply` | Atomic writes to the folder (temp file + rename, retried on Windows), local deletes, conflict copies (`CopyName`, rename local file aside), re-check before replace, stale temp cleanup (`RemoveTemp`) | done (#8) |
@@ -40,10 +40,12 @@ The synced folder holds only user files and never a `.git`. gcd syncs through th
 ```
 lock <state dir>/sync.lock (busy → ErrAlreadySyncing at once)
 apply.RemoveTemp(folder)           (leftover .gcd-tmp-* from an interrupted sync)
-scan.Scan(folder) ──────────────► local  {path → blob hash, size, mtime}
+Fetch → repo config + remote .gcdignore files ► scan.Rules
+scan.Scan(folder, rules) ───────► local  {path → blob hash, size, mtime} + Rejected
 ┌ round, retried up to 5× while Push fails with gitstore.ErrPushRejected
 gitstore.Fetch → TreeOf → ReadTree ► remote {path → Entry}
 gitstore.ReadTree(state.base_tree) ► base   {path → Entry}
+applyRules: drop excluded paths from all three sides ► Result.Rejected
                  │
 reconcile.Reconcile(base, local, remote) → []Action
    Conflict               → disk names Copy ("<stem> (conflict from <host> <date>)<ext>")
@@ -62,7 +64,8 @@ reconcile.Reconcile(base, local, remote) → []Action
                              DeleteLocal keeps it (Skipped)
                  │
 state.base_tree = new tree (or the remote tree when nothing was uploaded),
-                  except paths skipped before commit keep their old base entry
+                  except paths skipped before commit and excluded paths keep
+                  their old base entry
 ```
 
 Key invariants:
@@ -74,6 +77,7 @@ Key invariants:
 - Commits are created only when there are local changes to upload. A download-only sync makes no commit.
 - Only `100644` entries are written: no exec bit, no symlinks.
 - **Edits during a sync are never lost or half-uploaded (#8).** A file whose size or mtime moved since the scan, or whose blob no longer matches the scanned hash, sits out the round (`Result.Skipped`). Its old base entry is kept, so the next sync sees the same three-way situation. Downloads are written to `.gcd-tmp-*` in the target directory and renamed over the target only after a last re-check. Scan never lists `.gcd-tmp-*`, and each Sync deletes leftovers under the lock.
+- **A path the file rules exclude is invisible on every side (#6).** See "File rules" below.
 - **One Sync per Disk at a time.** The lock is an OS advisory lock (flock / LockFileEx), so the OS releases it when the holder dies; there is no stale-lock cleanup to do. A crash leaves only an unlocked file.
 - **Everything that depends on the remote lives in `Disk.round`**, which is re-run from fetch on a rejected push. Nothing outside the git-dir may change inside a round; apply and the state write come after it.
 
@@ -82,9 +86,34 @@ Hooks later tickets plug into: the mass-delete check goes between reconcile and 
 ## Repo config and managed paths (#3)
 
 - `.gcd/` and `.github/` (matched case-insensitively) are managed paths. `disk` drops them from base, local and remote before reconcile, so they are never written to the folder, never uploaded from it and never deleted for being absent. The commit keeps them because it starts from the remote tree.
-- `Sync` parses `.gcd/config.toml` in `Disk.round`, right after reading the fetched remote tree. A missing file means defaults. A newer `format` stops the sync before any change: `Result.FormatTooNew` plus a `*config.FormatError` that tells the user to upgrade. An invalid config also stops the sync. Later tickets read the parsed `config.Config` there (ignore rules and file limit #6, mass delete #7). Sync parses leniently and ignores unknown keys.
+- `Sync` fetches and parses `.gcd/config.toml` once before the scan, because the scan needs its ignore rules and size limit. It parses it again in every `Disk.round`, right after reading the fetched remote tree. A missing file means defaults. A newer `format` stops the sync before any change: `Result.FormatTooNew` plus a `*config.FormatError` that tells the user to upgrade. An invalid config also stops the sync. Mass delete (#7) reads the parsed `config.Config` in the round. Sync parses leniently and ignores unknown keys.
 - `disk.RepoConfig` / `SetRepoConfig` / `EnsureRepoConfig` read and commit the config as a single-file commit on top of the remote head (fast-forward push, `ErrRemoteChanged` if the remote moved). `gcd init` calls `EnsureRepoConfig`. `gcd config edit` opens `$EDITOR` and commits only if `ParseStrict` accepts the file, which also rejects unknown keys.
 - Bump `config.Format` only when the repo layout or meaning changes.
+
+## File rules (#6)
+
+The scan (`scan.Scan(folder, scan.Rules)`) applies these checks to each file and folder, in this order:
+
+1. **Ignore rules** use `.gitignore` syntax and match case-sensitively. They come from the built-in list (`scan/ignore.go`: `.DS_Store`, `Thumbs.db`, `desktop.ini`, `~$*`, `*.swp`, `*~`, `.gcd-tmp-*`, ...), then the repo config's `ignore`, then `.gcdignore` files from the root down.
+   - A deeper `.gcdignore` beats a shallower one. Within one source the last match wins, and `!` re-includes.
+   - An ignored folder is not entered, so a file under an excluded folder cannot be re-included, as in git.
+   - Ignored paths are skipped **silently**.
+   - `.gcdignore` files are ordinary synced files. Where the folder has no `.gcdignore` but the remote does, the remote's copy is used (`Rules.IgnoreFiles`). A machine joining with existing files therefore does not upload what the shared rules ignore.
+2. **File-name policy**: Windows' rules, enforced on every OS. A name must not contain `< > : " \ | ? *`, control characters or invalid UTF-8. It must not be a reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `COM0-9`, `LPT0-9`, `CONIN$`, `CONOUT$`), also with an extension such as `nul.txt`. It must not end in a space or a dot. A bad folder name rejects the folder and everything in it.
+3. **Regular files only**: symlinks and special files are rejected.
+4. **Size limit**: a file over `max_file_mb` is rejected without being hashed.
+
+`disk.applyRules` then works on all three sides (base, local, remote):
+
+- A remote or base path is dropped when `scan.Result.Exclude` says so: it is ignored by the local rules, lies at or under a path the scan rejected, or has a bad name. Remote symlinks (mode `120000`, which only other git clients can create) are dropped too. Remote paths with bad names or symlink mode are reported with `Remote: true`.
+- **Case collisions** are checked across local and remote paths together. Two paths collide when they are equal after lower-casing and NFC normalization, in the name or in any folder above it. Both are dropped and reported. Base paths are not part of the check, so a case-only rename collides with the old name and is not synced. The user has to rename the file to a different name.
+- A dropped path is never uploaded, downloaded or deleted. A rejected local file is therefore not mistaken for a deletion, and a remote file another client pushed with a bad name never reaches the folder and stays on the remote.
+- Dropped paths **keep their old base entry**, like skipped ones. When a rule stops applying (an ignore rule is removed, a collision is renamed away), the next sync sees each side's real changes since then. For example, a file deleted locally while ignored is downloaded again, not deleted remotely.
+- `Result.Rejected` lists the scan's local rejections plus remote ones and collisions, sorted by path. `gcd sync` prints them as `not synced <path>[ (on the remote)]: <reason>`.
+
+The size limit is checked only on local files, since it guards uploads. A remote file over the limit can only come from a non-gcd client or a lowered limit. It is downloaded once; after that its local copy is rejected, so the path stays frozen until the limit allows it again.
+
+Exec bits are never synced: trees get only `100644` entries and downloads are written `0644`. Content is never converted (`hash-object --no-filters`), even when the folder holds a `.gitattributes`.
 
 ## History: `gcd log` / `gcd restore` (`disk/history.go`)
 

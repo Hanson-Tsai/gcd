@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
+	"strings"
 
 	"github.com/Hanson-Tsai/gcd/internal/config"
 	"github.com/Hanson-Tsai/gcd/internal/gitstore"
+	"github.com/Hanson-Tsai/gcd/internal/scan"
 )
 
 // ErrRemoteChanged is returned when the remote moved between reading the repo
@@ -111,6 +114,34 @@ func (d *Disk) commitFile(ctx context.Context, parent, path string, content []by
 		return "", fmt.Errorf("push: %w", err)
 	}
 	return commit, nil
+}
+
+// scanRules fetches the remote and returns the rules for scanning the folder:
+// the repo config's ignore rules and size limit, plus the remote's .gcdignore
+// files (used where the folder has none yet, so a machine joining with
+// existing files does not upload what the shared rules ignore). Sync calls it
+// before scanning; each sync round then checks the format again after its
+// own fetch.
+func (d *Disk) scanRules(ctx context.Context) (scan.Rules, error) {
+	_, tree, err := d.fetchTree(ctx)
+	if err != nil {
+		return scan.Rules{}, err
+	}
+	cfg, err := d.repoConfig(ctx, tree)
+	if err != nil {
+		return scan.Rules{}, err
+	}
+	rules := scan.Rules{Ignore: cfg.Ignore, MaxFileSize: cfg.MaxFileSize, IgnoreFiles: map[string][]byte{}}
+	for p := range tree {
+		dir, name := path.Split(p)
+		if name != scan.IgnoreFile || config.IsManaged(p) {
+			continue
+		}
+		if rules.IgnoreFiles[strings.TrimSuffix(dir, "/")], err = d.readBlobAt(ctx, tree, p); err != nil {
+			return scan.Rules{}, err
+		}
+	}
+	return rules, nil
 }
 
 // repoConfig parses the repo config found in tree (path -> entry), or returns

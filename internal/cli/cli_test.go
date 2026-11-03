@@ -55,6 +55,21 @@ func TestInitAndSyncSmoke(t *testing.T) {
 	}
 }
 
+func TestSyncListsRejectedFilesWithReasons(t *testing.T) {
+	remote := fixture.NewRemote(t)
+	root := t.TempDir()
+	a := machine{home: filepath.Join(root, "a-home"), folder: filepath.Join(root, "a-folder")}
+	a.gcd(t, "init", remote.URL, a.folder)
+	remote.Commit(t, map[string]string{"a:b.txt": "x", "ok.txt": "ok"}, "another git client")
+
+	out := a.gcd(t, "sync")
+
+	want := `not synced a:b.txt (on the remote): name contains ':', which Windows does not allow`
+	if !strings.Contains(out, want) {
+		t.Errorf("sync output = %q, want a line %q", out, want)
+	}
+}
+
 // gcdFails runs gcd expecting a non-zero exit and returns its stderr.
 func (m machine) gcdFails(t *testing.T, args ...string) string {
 	t.Helper()

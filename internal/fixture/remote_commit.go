@@ -18,6 +18,26 @@ import (
 // config from a newer gcd.
 func (r *Remote) Commit(t testing.TB, files map[string]string, msg string) string {
 	t.Helper()
+	return r.commit(t, files, nil, msg)
+}
+
+// CommitMode is Commit for a single entry with an explicit tree mode, such as
+// "120000" (symlink; content is the link target) or "100755" (executable).
+func (r *Remote) CommitMode(t testing.TB, path, mode, content, msg string) string {
+	t.Helper()
+	return r.commit(t, map[string]string{path: content}, map[string]string{path: mode}, msg)
+}
+
+// Mode returns the tree mode of path at the remote's main branch.
+func (r *Remote) Mode(t testing.TB, path string) string {
+	t.Helper()
+	out := r.gitEnv(t, nil, "", "ls-tree", "--full-tree", "refs/heads/main", "--", path)
+	mode, _, _ := strings.Cut(out, " ")
+	return mode
+}
+
+func (r *Remote) commit(t testing.TB, files, modes map[string]string, msg string) string {
+	t.Helper()
 	index := filepath.Join(tempDir(t), "index")
 	env := []string{"GIT_INDEX_FILE=" + index}
 	head := r.Head(t)
@@ -31,7 +51,11 @@ func (r *Remote) Commit(t testing.TB, files map[string]string, msg string) strin
 	sort.Strings(paths)
 	for _, p := range paths {
 		blob := strings.TrimSpace(r.gitEnv(t, nil, files[p], "hash-object", "-w", "--no-filters", "--stdin"))
-		r.gitEnv(t, env, "", "update-index", "--add", "--cacheinfo", "100644,"+blob+","+p)
+		mode := modes[p]
+		if mode == "" {
+			mode = "100644"
+		}
+		r.gitEnv(t, env, "", "update-index", "--add", "--cacheinfo", mode+","+blob+","+p)
 	}
 	tree := strings.TrimSpace(r.gitEnv(t, env, "", "write-tree"))
 	args := []string{"commit-tree", tree, "-m", msg}
@@ -50,7 +74,10 @@ func (r *Remote) Commit(t testing.TB, files map[string]string, msg string) strin
 // gitEnv runs git against the bare remote with extra env and stdin.
 func (r *Remote) gitEnv(t testing.TB, env []string, stdin string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"--git-dir=" + r.Dir}, args...)...)
+	// Keep paths byte-exact: git on macOS would otherwise turn NFD names
+	// into NFC ones, and tests need to plant both.
+	pre := []string{"--git-dir=" + r.Dir, "-c", "core.precomposeunicode=false"}
+	cmd := exec.Command("git", append(pre, args...)...)
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer

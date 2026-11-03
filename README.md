@@ -107,13 +107,28 @@ These are **not** synced:
 - **Symlinks.** They are skipped.
 - **Executable bits and other permissions.** Every file is stored as a plain,
   non-executable file, and downloaded files get default permissions.
-- Files larger than the size limit (50 MB by default). gcd warns and skips them.
+- Files larger than the size limit (`max_file_mb` in the repo config, 50 MB
+  by default). gcd warns and skips them.
 - Names that would break on another OS: Windows-invalid characters
-  (`: ? * < > |`) and reserved names (`CON`, `NUL`, ...), names ending in a
-  space or a dot, and paths that differ only in case. gcd warns and skips them.
+  (`: ? * < > | " \`) and reserved names (`CON`, `NUL`, `COM1`, ..., also
+  with an extension such as `nul.txt`), names ending in a space or a dot, and
+  paths that differ only in case (`a.md` and `A.md`, or `Notes/` and
+  `notes/`). gcd warns and skips them on every OS.
 - System clutter such as `.DS_Store`, `Thumbs.db`, `desktop.ini`, Office lock
-  files and editor swap files, plus anything matched by a `.gcdignore` file
-  (same syntax as `.gitignore`).
+  files (`~$*`) and editor swap and backup files (`*.swp`, `*~`). These are
+  skipped without a warning.
+- Anything matched by the `ignore` list in the repo config (`gcd config
+  edit`) or by a `.gcdignore` file in the synced folder. `.gcdignore` uses
+  `.gitignore` syntax, may sit in any subfolder, and is itself synced, so
+  every machine shares the same rules.
+
+`gcd sync` lists every file it skipped with a warning and the reason. A
+skipped file is left alone on both sides: it is not uploaded, the copy on
+GitHub is not deleted, and nothing is written over it. The same holds for
+files with such names that another git client pushed to the repo: gcd does
+not download them and leaves them in the repo. Renaming a file by changing
+only its case (`notes.md` to `Notes.md`) is not synced. Rename it to a
+different name instead.
 
 ## Releasing
 
