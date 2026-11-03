@@ -129,6 +129,16 @@ func TestInitNamesDiskAfterFolderByDefault(t *testing.T) {
 	}
 }
 
+func TestVersionCommand(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := cli.Run(context.Background(), []string{"version"}, &out, &errOut); code != 0 {
+		t.Fatalf("gcd version: exit %d: %s", code, errOut.String())
+	}
+	if !strings.HasPrefix(out.String(), "gcd version ") {
+		t.Errorf("gcd version printed %q, want it to start with \"gcd version \"", out.String())
+	}
+}
+
 func TestUnknownCommandFails(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if code := cli.Run(context.Background(), []string{"bogus"}, &out, &errOut); code == 0 {
