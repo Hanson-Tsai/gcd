@@ -9,7 +9,7 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | Package | Role | Status |
 |---|---|---|
 | `cmd/gcd` | `main`: wires signals and calls `cli.Run` | done |
-| `internal/cli` | Subcommands, standard-library `flag` only. One file per command (`cmd_<name>.go`) that calls `register(...)` from `init()`; `cli.go` holds dispatch, the git version check and `openCurrentDisk` | `init`, `sync`, `config edit` |
+| `internal/cli` | Subcommands, standard-library `flag` only. One file per command (`cmd_<name>.go`) that calls `register(...)` from `init()`; `cli.go` holds dispatch, the git version check and `openCurrentDisk` | `init`, `login`, `sync`, `config edit` |
 | `internal/disk` | **Seam A.** `Open(Options)` / `Sync(ctx, SyncOptions) (Result, error)`. Orchestrates one sync, owns the local state file (`state.go`), names conflict copies | full three-way sync (#4) |
 | `internal/scan` | Walk the folder and produce path → git blob hash plus size and mtime. Ignore rules, file-name policy and the large-file limit go here (#6) | regular files only |
 | `internal/reconcile` | Pure three-way rules: `Reconcile(base, local, remote) []Action` | done (#4) |
@@ -18,7 +18,8 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | `internal/registry` | Per-machine Disk list (`registry.json`) and "which Disk am I in": `--disk <name>`, else the Disk containing cwd (matched by file identity), else the only Disk | done |
 | `internal/config` | Repo config `.gcd/config.toml` (TOML): `Parse` / `ParseStrict`, defaults, `Format` check (`ErrFormatTooNew`), `IsManaged` | done (#3) |
 | `internal/fixture` | Seam A test fixture: `file://` bare remote + N devices; `Remote.Commit` plants files as another client | done |
-| `internal/compact`, `auth`, `watch`, `workflow` | Not created yet; add them when their ticket lands (#12, #13, #16, #15) | — |
+| `internal/auth` | `ParseRepo` (owner/repo), `Tokens.Lookup` (`GCD_TOKEN`, then OS keychain via go-keyring, one entry per repo) / `Store`, `PromptToken`, `GitHub.Check` (REST + git smart-HTTP; base URLs injectable), `TokenHelp`. `auth/authtest`: fake GitHub (REST + `git http-backend`) and in-memory keychain | done (#13) |
+| `internal/compact`, `watch`, `workflow` | Not created yet; add them when their ticket lands (#12, #16, #15) | — |
 
 Dependency direction: `cli → disk, registry → scan, reconcile, gitstore, apply`. `reconcile` imports nothing from gcd. `fixture` imports `disk` and is used only from external `_test` packages, such as `package disk_test`.
 
@@ -79,6 +80,15 @@ Hooks later tickets plug into: the mass-delete check goes between reconcile and 
 - `disk.RepoConfig` / `SetRepoConfig` / `EnsureRepoConfig` read and commit the config as a single-file commit on top of the remote head (fast-forward push, `ErrRemoteChanged` if the remote moved). `gcd init` calls `EnsureRepoConfig`. `gcd config edit` opens `$EDITOR` and commits only if `ParseStrict` accepts the file, which also rejects unknown keys.
 - Bump `config.Format` only when the repo layout or meaning changes.
 
+## GitHub auth (#13)
+
+- `gcd init owner/repo <folder>` resolves to `https://github.com/owner/repo.git`. A `file://` URL is still accepted and skips every GitHub step (tests, offline use). The registry stores only the URL; commands recover the repo with `auth.GitHub.RepoOf(remote)`, and `file://` remotes get no token.
+- Token lookup: `GCD_TOKEN`, then the keychain (service `gcd`, account `github.com/<owner>/<repo>`). `init` prompts when neither has one and saves the typed token only after the checks and the first remote write succeed. `gcd login owner/repo` replaces it.
+- `auth.GitHub.Check` before binding: `GET /repos/{o}/{r}` (401 → `ErrTokenInvalid`; 404 → anonymous retry, 200 → `ErrPublicRepo`, else `ErrRepoNotFound`; `private:false` → `ErrPublicRepo`). Then permission probes without side effects: Contents write = `GET {o}/{r}.git/info/refs?service=git-receive-pack` (what `git push` asks first); Actions write = dispatch a workflow file that never exists (403 = missing, 404/422 = present). Missing ones come back together in `*MissingPermissionsError`.
+- Workflows write has no side-effect-free probe. A push touching `.github/workflows/` that GitHub refuses comes back as `gitstore.ErrWorkflowsPermission`, and the CLI names the permission. #15 must install the workflow during `init`, before the registry is saved, so this check happens there.
+- **Credentials to git** (`gitstore/auth.go`): every git process gets `-c credential.helper=` (drops the user's osxkeychain/manager helpers, so they neither answer nor store) and `GIT_ASKPASS=<gcd executable>` plus `GCD_ASKPASS=1`, `GCD_ASKPASS_TOKEN=<token>` in the child env only. `main` (and any test binary that runs git with a token: see `TestMain` in `cli` and `gitstore`) calls `gitstore.ServeAskpass()` first. Username `x-access-token`. No `GIT_CONFIG_COUNT` (git 2.31).
+- Git credential failures come back as `*gitstore.AuthError` (matches `gitstore.ErrAuth`) with the token scrubbed. `cli.Run` passes every error through `explain`, which adds `auth.TokenHelp` (pre-filled token URL, `gcd login`, `GCD_TOKEN`), so every command reports an expired token the same way.
+
 ## History: `gcd log` / `gcd restore` (`disk/history.go`)
 
 - `Disk.Log(ctx, path)` fetches, then lists the remote's first-parent history newest first (`gitstore.History`, one `git log --name-status` call). Paths are matched literally (`GIT_LITERAL_PATHSPECS=1`); a directory path matches everything below it.
@@ -90,5 +100,6 @@ Hooks later tickets plug into: the mass-delete check goes between reconcile and 
 
 - **Seam A**: `internal/disk` tests through `fixture.NewDevices(t, n)`. Each device has its own folder, state dir and injectable `Host`. Assertions use `Device.Files` / `AssertFiles`, `Remote.Files` / `AssertFiles` and `Remote.Log`.
 - **Seam B** (compaction, #12) gets its own fixture for bare repos with chosen commit times.
-- CLI: smoke tests only (`internal/cli`). They use `GCD_HOME` to simulate separate machines.
+- CLI: smoke tests only (`internal/cli`). They use `GCD_HOME` to simulate separate machines. GitHub flows use `cli.UseFakeGitHub(t, authtest.GitHub{...}.Start(t), keyring, stdin)` (in `export_test.go`); the fake serves real bare repos over smart HTTP, so `init owner/repo` and `sync` with a token run offline.
+- Real-GitHub tests are opt-in: `TestE2E*` skip unless `GCD_E2E_REPO` and `GCD_TOKEN` are set; the **E2E** workflow runs them on manual dispatch only. See `docs/manual-verification.md`.
 - Tests run offline and must pass on macOS, Linux and Windows (CI matrix in `.github/workflows/ci.yml`).
