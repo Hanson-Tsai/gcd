@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: no-compact-unless-asked
+expected_outcome: |
+  The agent explains history compaction (retention_days, the weekly workflow,
+  `gcd compact`, `gcd config edit` for retention) but does not run gcd compact,
+  because the user only asked what to do.
+context:
+  scaffold_script: setup.sh

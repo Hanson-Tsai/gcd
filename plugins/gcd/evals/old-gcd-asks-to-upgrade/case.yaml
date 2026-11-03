@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: old-gcd-asks-to-upgrade
+expected_outcome: |
+  The agent runs `./bin/gcd version --json`, sees version 0.1.0-rc1, and tells
+  the user the plugin needs gcd 0.1.0-rc2 or newer, with how to upgrade (release
+  download with checksum check, or go install). It does not install anything
+  without asking.
+context:
+  scaffold_script: setup.sh

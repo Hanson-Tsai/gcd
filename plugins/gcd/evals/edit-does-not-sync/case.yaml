@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: edit-does-not-sync
+expected_outcome: |
+  The agent edits notes/todo.md. It does not run gcd sync (the user did not ask for one).
+context:
+  scaffold_script: setup.sh
