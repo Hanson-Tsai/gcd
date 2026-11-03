@@ -109,12 +109,19 @@ func checkName(name string) (Reason, string, bool) {
 	if strings.HasSuffix(name, ".") {
 		return BadEnding, "name ends with a dot, which Windows does not allow", true
 	}
-	base, _, _ := strings.Cut(name, ".")
-	base = strings.TrimRight(base, " ")
-	if reserved[strings.ToUpper(base)] {
-		return ReservedName, fmt.Sprintf("%q is a reserved device name on Windows", base), true
+	if ReservedOnWindows(name) {
+		base, _, _ := strings.Cut(name, ".")
+		return ReservedName, fmt.Sprintf("%q is a reserved device name on Windows", strings.TrimRight(base, " ")), true
 	}
 	return 0, "", false
+}
+
+// ReservedOnWindows reports whether name, before any extension and ignoring
+// case and trailing spaces, is a device name Windows reserves (CON, NUL,
+// COM1, LPT1, CONIN$, ...).
+func ReservedOnWindows(name string) bool {
+	base, _, _ := strings.Cut(name, ".")
+	return reserved[strings.ToUpper(strings.TrimRight(base, " "))]
 }
 
 // reserved holds Windows' reserved device names (upper case). COM0 and LPT0

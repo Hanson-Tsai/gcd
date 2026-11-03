@@ -23,7 +23,16 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | `internal/watch` | `gcd watch`: `Run(ctx, []Target, Options)` keeps Disks in sync, one goroutine per Disk; fsnotify hints + stat snapshots, debounce, ls-remote poll; reports `Event`s | done (#16) |
 | `internal/workflow` | The Actions compaction workflow: `Render(Spec{Pin, Schedule})` / `Parse`, `Releases.Pin(ctx, version)` (SHA-256 of `gcd_<v>_linux_amd64.tar.gz` from the release's `checksums.txt`; base URL injectable), `CheckSchedule` | done (#15) |
 
-Dependency direction: `cli → watch → disk`; `cli → disk, registry → scan, reconcile, gitstore, apply`. `reconcile` imports nothing from gcd. `fixture` imports `disk` and is used only from external `_test` packages, such as `package disk_test`.
+Dependency direction (imports among gcd packages; arrows point at the imported package, no cycles):
+
+- `cmd/gcd → cli, gitstore` (`ServeAskpass`)
+- `cli → watch, disk, registry, compact, auth, config, workflow, gitstore, version`
+- `watch → disk, config, scan`
+- `disk → compact, apply, scan, reconcile, gitstore, config, workflow`
+- `registry → apply` (`WriteFile`), `scan` (`ReservedOnWindows`)
+- `apply → scan` (`TempPrefix`), `reconcile`
+- `compact → config, gitstore`; `auth → gitstore` (`TokenUser`); `config → workflow` (`CheckSchedule`)
+- `scan`, `reconcile`, `gitstore`, `workflow` and `version` import nothing from gcd. `fixture` imports `disk` and is used only from external `_test` packages, such as `package disk_test`.
 
 ## On-disk layout (per machine)
 
@@ -97,7 +106,7 @@ A round is `Disk.plan` (fetch, repo config, file rules, reconcile, mass-delete c
 
 - `.gcd/` and `.github/` (matched case-insensitively) are managed paths. `disk` drops them from base, local and remote before reconcile, so they are never written to the folder, never uploaded from it and never deleted for being absent. The commit keeps them because it starts from the remote tree.
 - `Sync` fetches and parses `.gcd/config.toml` once before the scan, because the scan needs its ignore rules and size limit. It parses it again in every `Disk.round`, right after reading the fetched remote tree. A missing file means defaults. A newer `format` stops the sync before any change: `Result.FormatTooNew` plus a `*config.FormatError` that tells the user to upgrade. An invalid config also stops the sync. Mass delete (#7) reads the parsed `config.Config` in the round. Sync parses leniently and ignores unknown keys.
-- `disk.RepoConfig` / `SetRepoConfig` / `EnsureRepoConfig` read and commit the config as a single-file commit on top of the remote head (fast-forward push, `ErrRemoteChanged` if the remote moved). `gcd init` calls `EnsureRepoConfig`. `gcd config edit` opens `$EDITOR` and commits only if `ParseStrict` accepts the file, which also rejects unknown keys.
+- `disk.RepoConfig` / `SetRepoConfig` / `EnsureRepoConfig` read and commit the config as a single-file commit on top of the remote head (fast-forward push, `ErrRemoteChanged` if the remote moved). `gcd init` calls `EnsureRepoConfig`. `gcd config edit` opens `$VISUAL`, else `$EDITOR`, and commits only if `ParseStrict` accepts the file, which also rejects unknown keys.
 - Bump `config.Format` only when the repo layout or meaning changes.
 
 ## File rules (#6)

@@ -29,10 +29,6 @@ import (
 	"github.com/Hanson-Tsai/gcd/internal/scan"
 )
 
-// TempPrefix starts the name of every temp file apply creates. Scan never
-// lists such files.
-const TempPrefix = scan.TempPrefix
-
 // BlobSource provides file content by hash (implemented by gitstore.Store).
 type BlobSource interface {
 	Blob(ctx context.Context, hash string) (io.ReadCloser, error)
@@ -133,7 +129,7 @@ func writeFile(path string, r io.Reader, beforeReplace func() error) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, TempPrefix+"*")
+	tmp, err := os.CreateTemp(dir, scan.TempPrefix+"*")
 	if err != nil {
 		return err
 	}
@@ -182,7 +178,7 @@ func rename(from, to string) error {
 	return err
 }
 
-// RemoveTemp deletes every temp file (TempPrefix*) below root: leftovers of
+// RemoveTemp deletes every temp file (scan.TempPrefix*) below root: leftovers of
 // an interrupted sync. Call it only while holding the Disk's sync lock, so
 // that no temp file still being written is removed.
 func RemoveTemp(root string) error {
@@ -190,7 +186,7 @@ func RemoveTemp(root string) error {
 		if err != nil {
 			return err
 		}
-		if d.Type().IsRegular() && strings.HasPrefix(d.Name(), TempPrefix) {
+		if d.Type().IsRegular() && strings.HasPrefix(d.Name(), scan.TempPrefix) {
 			if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}

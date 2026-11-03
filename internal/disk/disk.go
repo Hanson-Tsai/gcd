@@ -603,9 +603,13 @@ func (d *Disk) commit(ctx context.Context, remote map[string]gitstore.Entry, par
 	if tree, err = d.store.WriteTree(ctx, entries); err != nil {
 		return nil, "", "", err
 	}
-	sig := gitstore.Signature{Name: d.host, Email: "gcd@" + d.host}
-	commit, err = d.store.CommitTree(ctx, tree, parent, sig, CommitMessage(d.host, changes))
+	commit, err = d.store.CommitTree(ctx, tree, parent, d.signature(), CommitMessage(d.host, changes))
 	return entries, tree, commit, err
+}
+
+// signature is the author and committer of this machine's commits.
+func (d *Disk) signature() gitstore.Signature {
+	return gitstore.Signature{Name: d.host, Email: "gcd@" + d.host}
 }
 
 // CommitMessage formats "sync from <host>: +added ~modified -deleted".

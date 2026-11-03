@@ -223,7 +223,7 @@ const probeWorkflow = "gcd-permission-probe-does-not-exist.yml"
 // permission is missing, 404/422 means it is there and nothing ran.
 func (g GitHub) canDispatch(ctx context.Context, r Repo, token string) (bool, error) {
 	path := "/repos/" + r.String() + "/actions/workflows/" + probeWorkflow + "/dispatches"
-	resp, err := g.api(ctx, http.MethodPost, path, token, map[string]any{"ref": "main"})
+	resp, err := g.api(ctx, http.MethodPost, path, token, map[string]any{"ref": gitstore.Branch})
 	if err != nil {
 		return false, err
 	}

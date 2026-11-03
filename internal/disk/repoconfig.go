@@ -127,8 +127,7 @@ func (d *Disk) commitFiles(ctx context.Context, parent string, files map[string]
 	if err != nil {
 		return "", err
 	}
-	sig := gitstore.Signature{Name: d.host, Email: "gcd@" + d.host}
-	commit, err := d.store.CommitTree(ctx, tree, parent, sig, msg)
+	commit, err := d.store.CommitTree(ctx, tree, parent, d.signature(), msg)
 	if err != nil {
 		return "", err
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/Hanson-Tsai/gcd/internal/auth"
 	"github.com/Hanson-Tsai/gcd/internal/compact"
 	"github.com/Hanson-Tsai/gcd/internal/disk"
+	"github.com/Hanson-Tsai/gcd/internal/gitstore"
 	"github.com/Hanson-Tsai/gcd/internal/workflow"
 )
 
@@ -124,7 +125,7 @@ func dispatchCompact(ctx context.Context, e *env) error {
 	if err != nil {
 		return err
 	}
-	url, err := github.DispatchWorkflow(ctx, repo, token, workflow.FileName, "main")
+	url, err := github.DispatchWorkflow(ctx, repo, token, workflow.FileName, gitstore.Branch)
 	if errors.Is(err, auth.ErrWorkflowNotFound) {
 		return fmt.Errorf("%w\nInstall the workflow with `gcd workflow upgrade`, or run `gcd compact --local`", err)
 	}

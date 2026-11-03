@@ -18,7 +18,7 @@ func init() {
 	register(command{
 		name:    "config",
 		usage:   "config edit [--disk <name>]",
-		summary: "edit the repo config in $EDITOR, check it and commit it",
+		summary: "edit the repo config in $VISUAL or $EDITOR, check it and commit it",
 		run:     runConfig,
 	})
 }
@@ -97,13 +97,13 @@ func editRepoConfig(ctx context.Context, e *env, d *disk.Disk) error {
 	return nil
 }
 
-// runEditor runs $EDITOR (else $VISUAL, else a platform default) on file and
-// waits for it. $EDITOR may carry arguments ("code --wait"); a value that
+// runEditor runs $VISUAL (else $EDITOR, else a platform default) on file and
+// waits for it. The value may carry arguments ("code --wait"); a value that
 // names an existing file is used as-is, so paths with spaces work.
 func runEditor(e *env, file string) error {
-	ed := os.Getenv("EDITOR")
+	ed := os.Getenv("VISUAL")
 	if ed == "" {
-		ed = os.Getenv("VISUAL")
+		ed = os.Getenv("EDITOR")
 	}
 	if ed == "" {
 		ed = "vi"

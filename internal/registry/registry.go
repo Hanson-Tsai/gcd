@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/Hanson-Tsai/gcd/internal/apply"
+	"github.com/Hanson-Tsai/gcd/internal/scan"
 )
 
 // HomeEnv overrides the gcd home directory (used by tests and power users).
@@ -117,7 +118,7 @@ func CheckName(name string) error {
 			return bad("use only letters, digits, '.', '_' and '-'")
 		}
 	}
-	if windowsReserved(name) {
+	if scan.ReservedOnWindows(name) {
 		return bad("reserved on Windows")
 	}
 	return nil
@@ -125,18 +126,6 @@ func CheckName(name string) error {
 
 func isAlnum(c byte) bool {
 	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
-}
-
-// windowsReserved reports whether name (before any extension) is a DOS
-// device name such as CON or COM1.
-func windowsReserved(name string) bool {
-	base, _, _ := strings.Cut(strings.ToUpper(name), ".")
-	switch base {
-	case "CON", "PRN", "AUX", "NUL":
-		return true
-	}
-	return len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) &&
-		'0' <= base[3] && base[3] <= '9'
 }
 
 // Add registers e. It refuses a name already taken (ignoring case, since the
