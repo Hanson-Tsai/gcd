@@ -10,7 +10,7 @@ import (
 func init() {
 	register(command{
 		name:    "sync",
-		usage:   "sync [--disk <name>]",
+		usage:   "sync [--disk <name>] [--yes]",
 		summary: "upload local changes and download remote changes",
 		run:     runSync,
 	})
@@ -18,6 +18,7 @@ func init() {
 
 func runSync(ctx context.Context, e *env, args []string) error {
 	fs := newDiskFlags(e, "sync")
+	yes := fs.Bool("yes", false, "go ahead even if the sync deletes more files than the repo config allows")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -28,7 +29,10 @@ func runSync(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	res, err := d.Sync(ctx, disk.SyncOptions{})
+	res, err := d.Sync(ctx, disk.SyncOptions{Yes: *yes})
+	if res.NeedsConfirm {
+		return fmt.Errorf("%w\nif these deletions are intended, run `gcd sync --yes`", err)
+	}
 	if err != nil {
 		return err
 	}

@@ -118,8 +118,9 @@ debounce_seconds = 10
 # gcd watch: seconds between checks for changes on the remote.
 poll_seconds = 60
 
-# A sync that would delete more than mass_delete_percent % of the files, or
-# more than mass_delete_count files, stops and asks for ` + "`gcd sync --yes`" + `.
+# A sync that would delete more than mass_delete_percent % of the files (and
+# more than 5 files), or more than mass_delete_count files, stops and asks
+# for ` + "`gcd sync --yes`" + `.
 mass_delete_percent = 20
 mass_delete_count = 50
 

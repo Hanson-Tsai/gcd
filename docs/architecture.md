@@ -9,7 +9,7 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | Package | Role | Status |
 |---|---|---|
 | `cmd/gcd` | `main`: wires signals and calls `cli.Run` | done |
-| `internal/cli` | Subcommands, standard-library `flag` only. One file per command (`cmd_<name>.go`) that calls `register(...)` from `init()`; `cli.go` holds dispatch, the git version check and `openCurrentDisk` | `init`, `sync`, `config edit` |
+| `internal/cli` | Subcommands, standard-library `flag` only. One file per command (`cmd_<name>.go`) that calls `register(...)` from `init()`; `cli.go` holds dispatch, the git version check and `openCurrentDisk` | `init`, `login`, `sync`, `config edit` |
 | `internal/disk` | **Seam A.** `Open(Options)` / `Sync(ctx, SyncOptions) (Result, error)`. Orchestrates one sync, owns the local state file (`state.go`), names conflict copies | full three-way sync (#4) |
 | `internal/scan` | Walk the folder and produce path → git blob hash plus size and mtime, applying the file rules: ignore rules, file-name policy, size limit, regular files only (`Rules`, `Result.Rejected`). `Result.Exclude` applies them to remote/base paths; `Collisions` finds case collisions | done (#6) |
 | `internal/reconcile` | Pure three-way rules: `Reconcile(base, local, remote) []Action` | done (#4) |
@@ -17,8 +17,10 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | `internal/apply` | Atomic writes to the folder (temp file + rename, retried on Windows), local deletes, conflict copies (`CopyName`, rename local file aside), re-check before replace, stale temp cleanup (`RemoveTemp`) | done (#8) |
 | `internal/registry` | Per-machine Disk list (`registry.json`) and "which Disk am I in": `--disk <name>`, else the Disk containing cwd (matched by file identity), else the only Disk | done |
 | `internal/config` | Repo config `.gcd/config.toml` (TOML): `Parse` / `ParseStrict`, defaults, `Format` check (`ErrFormatTooNew`), `IsManaged` | done (#3) |
-| `internal/fixture` | Seam A test fixture: `file://` bare remote + N devices; `Remote.Commit` plants files as another client | done |
-| `internal/compact`, `auth`, `watch`, `workflow` | Not created yet; add them when their ticket lands (#12, #13, #16, #15) | — |
+| `internal/fixture` | Seam A test fixture: `file://` bare remote + N devices; `Remote.Commit` plants files as another client. Seam B: `Remote.CommitAt(CommitSpec{Time, Host, Files, Delete})` plants commits with chosen times, `Remote.History` reads them back with parents, idents and dates | done |
+| `internal/auth` | `ParseRepo` (owner/repo), `Tokens.Lookup` (`GCD_TOKEN`, then OS keychain via go-keyring, one entry per repo) / `Store`, `PromptToken`, `GitHub.Check` (REST + git smart-HTTP; base URLs injectable), `TokenHelp`. `auth/authtest`: fake GitHub (REST + `git http-backend`) and in-memory keychain | done (#13) |
+| `internal/compact` | **Seam B.** `Run(ctx, Options{GitDir, Remote, Token, RetentionDays, Now}) (Result, error)`: history compaction, used by `gcd compact --local` and `--run` | done (#12) |
+| `watch`, `workflow` | Not created yet; add them when their ticket lands (#16, #15) | — |
 
 Dependency direction: `cli → disk, registry → scan, reconcile, gitstore, apply`. `reconcile` imports nothing from gcd. `fixture` imports `disk` and is used only from external `_test` packages, such as `package disk_test`.
 
@@ -115,6 +117,21 @@ The size limit is checked only on local files, since it guards uploads. A remote
 
 Exec bits are never synced: trees get only `100644` entries and downloads are written `0644`. Content is never converted (`hash-object --no-filters`), even when the folder holds a `.gitattributes`.
 
+## Mass-delete guard (#7, `disk/massdelete.go`)
+
+- Checked in `Disk.round` right after reconcile, before conflict naming, commit and push, so it re-runs on every retry. Deletions on both sides count together (`DeleteRemote` + `DeleteLocal`); the percentage is of the base (last synced) files, managed paths and paths excluded by the file rules left out.
+- A sync needs confirmation when it deletes more than `mass_delete_count` files, or more than `mass_delete_percent` % of the base files **and** more than 5 files (`minPercentDeletes`, so removing a file or two from a small folder never asks).
+- Without `SyncOptions.Yes` it stops with `ErrMassDelete`, `Result.NeedsConfirm` and `Result.PendingDeletes`; the remote and the folder are untouched. The CLI adds the `gcd sync --yes` hint; `gcd watch` (#29 story) should report it as a warning and not pass `Yes`.
+
+## GitHub auth (#13)
+
+- `gcd init owner/repo <folder>` resolves to `https://github.com/owner/repo.git`. A `file://` URL is still accepted and skips every GitHub step (tests, offline use). The registry stores only the URL; commands recover the repo with `auth.GitHub.RepoOf(remote)`, and `file://` remotes get no token.
+- Token lookup: `GCD_TOKEN`, then the keychain (service `gcd`, account `github.com/<owner>/<repo>`). `init` prompts when neither has one and saves the typed token only after the checks and the first remote write succeed. `gcd login owner/repo` replaces it.
+- `auth.GitHub.Check` before binding: `GET /repos/{o}/{r}` (401 → `ErrTokenInvalid`; 404 → anonymous retry, 200 → `ErrPublicRepo`, else `ErrRepoNotFound`; `private:false` → `ErrPublicRepo`). Then permission probes without side effects: Contents write = `GET {o}/{r}.git/info/refs?service=git-receive-pack` (what `git push` asks first); Actions write = dispatch a workflow file that never exists (403 = missing, 404/422 = present). Missing ones come back together in `*MissingPermissionsError`.
+- Workflows write has no side-effect-free probe. A push touching `.github/workflows/` that GitHub refuses comes back as `gitstore.ErrWorkflowsPermission`, and the CLI names the permission. #15 must install the workflow during `init`, before the registry is saved, so this check happens there.
+- **Credentials to git** (`gitstore/auth.go`): every git process gets `-c credential.helper=` (drops the user's osxkeychain/manager helpers, so they neither answer nor store) and `GIT_ASKPASS=<gcd executable>` plus `GCD_ASKPASS=1`, `GCD_ASKPASS_TOKEN=<token>` in the child env only. `main` (and any test binary that runs git with a token: see `TestMain` in `cli` and `gitstore`) calls `gitstore.ServeAskpass()` first. Username `x-access-token`. No `GIT_CONFIG_COUNT` (git 2.31).
+- Git credential failures come back as `*gitstore.AuthError` (matches `gitstore.ErrAuth`) with the token scrubbed. `cli.Run` passes every error through `explain`, which adds `auth.TokenHelp` (pre-filled token URL, `gcd login`, `GCD_TOKEN`), so every command reports an expired token the same way.
+
 ## History: `gcd log` / `gcd restore` (`disk/history.go`)
 
 - `Disk.Log(ctx, path)` fetches, then lists the remote's first-parent history newest first (`gitstore.History`, one `git log --name-status` call). Paths are matched literally (`GIT_LITERAL_PATHSPECS=1`); a directory path matches everything below it.
@@ -122,9 +139,21 @@ Exec bits are never synced: trees get only `100644` entries and downloads are wr
 - `At` is a time (newest commit at or before it, by author time) or a commit hash. The zero `At` means the newest version that has the path, which for a deleted file is the version just before the deletion. `disk.ParseAt` reads the CLI's `--at`.
 - The retention boundary is the oldest commit still in history. Once compaction (#12) runs, that commit is the snapshot root. Times before it return `ErrBeforeRetention`. A commit outside the history returns `ErrUnknownCommit`, and a path missing at that point returns `ErrPathNotFound`. A different local file returns `ErrExists` unless `Force` is set.
 
+## History compaction: `gcd compact` (`internal/compact`)
+
+- `compact.Run` fetches the remote into `Options.GitDir`, reads `retention_days` from `.gcd/config.toml` at the head (`Options.RetentionDays` > 0 overrides it), and refuses a newer or invalid repo format before changing anything.
+- **Cut point**: the commit just before the oldest first-parent commit whose author time is at or after `Now - retention`. Everything from that commit on is kept, even a later commit with an older time (clock skew), so no commit dated inside the retention period is dropped. If the cut point is already the root, or there is none, Run does nothing (`Result.Compacted == false`). A second run is therefore a no-op.
+- **Snapshot root**: the cut point's tree, author and committer lines (so `gcd restore` sees the cut point's author time as the retention boundary), no parent, message `snapshot of history up to <time>`.
+- **Kept commits** are rebuilt from their raw objects (`gitstore.ReadCommits`): only the `parent` line changes; signatures (`gpgsig`, `mergetag`) are dropped. Author, committer, dates with their zone offsets, encoding and message stay byte for byte. Hashes are computed in Go (`gitstore.CommitHash`, SHA-1) to chain the commits, then written in one `hash-object -t commit --stdin-paths` call (`gitstore.WriteCommits`), which must return the same hashes. No `commit-tree` is involved. The rewrite depends only on the history, so compacting the same history twice gives the same commits.
+- Run checks the invariant (new head tree == old head tree) and then pushes with `gitstore.ForcePush`: `--force-with-lease=refs/heads/main:<head at start>`. A push made meanwhile makes it fail with `compact.ErrLeaseFailed` (`Result.LeaseFailed`), and that push is kept.
+- Only the first-parent chain survives. gcd never makes merges, so this matters only for repos edited with plain git.
+- `gcd compact --local` resolves the Disk like other commands and works in its git-dir (`<state dir>/git`), so only new objects are fetched. It does not take the sync lock: a concurrent sync on the same machine either wins the race (the lease fails) or fetches the new history next round. `gcd compact --run [--repo <url>]` is the Actions entry point (#15). It works in a temporary git-dir and defaults the repo to `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git`. Both modes pass the remote's token as `Options.Token`, and gitstore hands it to git through askpass (#13). The token comes from `remoteToken`: `GCD_TOKEN`, else the keychain, and none for non-GitHub URLs. In Actions the workflow sets `GCD_TOKEN` to `github.token`. `gcd compact` without a mode is left for #15 (workflow_dispatch) and currently prints usage.
+- Devices need no special handling: their base is a tree hash, and `Fetch` uses a `+` refspec, so the rewritten history is picked up on the next sync. Old objects stay in each device's git-dir (`gc.auto=0`).
+
 ## Testing
 
 - **Seam A**: `internal/disk` tests through `fixture.NewDevices(t, n)`. Each device has its own folder, state dir and injectable `Host`. Assertions use `Device.Files` / `AssertFiles`, `Remote.Files` / `AssertFiles` and `Remote.Log`.
-- **Seam B** (compaction, #12) gets its own fixture for bare repos with chosen commit times.
-- CLI: smoke tests only (`internal/cli`). They use `GCD_HOME` to simulate separate machines.
+- **Seam B**: `internal/compact` tests run `compact.Run` on `fixture.NewRemote` repos built with `Remote.CommitAt` (chosen commit times) and a fixed `Now`. `compact/sync_test.go` checks Seam A devices across a compaction.
+- CLI: smoke tests only (`internal/cli`). They use `GCD_HOME` to simulate separate machines. GitHub flows use `cli.UseFakeGitHub(t, authtest.GitHub{...}.Start(t), keyring, stdin)` (in `export_test.go`); the fake serves real bare repos over smart HTTP, so `init owner/repo` and `sync` with a token run offline.
+- Real-GitHub tests are opt-in: `TestE2E*` skip unless `GCD_E2E_REPO` and `GCD_TOKEN` are set; the **E2E** workflow runs them on manual dispatch only. See `docs/manual-verification.md`.
 - Tests run offline and must pass on macOS, Linux and Windows (CI matrix in `.github/workflows/ci.yml`).
