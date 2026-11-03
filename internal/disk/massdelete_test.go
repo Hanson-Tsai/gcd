@@ -147,3 +147,49 @@ func TestDeletingAFewFilesFromASmallFolderNeedsNoConfirmation(t *testing.T) {
 
 	remote.AssertFiles(t, map[string]string{"f2.md": "2"})
 }
+
+func TestEmptyingASmallFolderNeedsConfirmation(t *testing.T) {
+	remote, devs := fixture.NewDevices(t, 1)
+	a := devs[0]
+	all := files(3)
+	writeAll(t, a, all)
+	a.Sync(t)
+	before := remote.Head(t)
+	for p := range all {
+		a.Remove(t, p) // the folder was emptied, or the drive is not mounted
+	}
+
+	res, err := a.Disk.Sync(context.Background(), disk.SyncOptions{})
+
+	if !errors.Is(err, disk.ErrMassDelete) || !res.NeedsConfirm || res.PendingDeletes != 3 {
+		t.Fatalf("sync = NeedsConfirm %v, %d pending, %v; want true, 3, ErrMassDelete",
+			res.NeedsConfirm, res.PendingDeletes, err)
+	}
+	if got := remote.Head(t); got != before {
+		t.Errorf("remote moved from %s to %s", before, got)
+	}
+	remote.AssertFiles(t, all)
+}
+
+func TestEmptyingASmallRemoteNeedsConfirmation(t *testing.T) {
+	remote, devs := fixture.NewDevices(t, 2)
+	a, b := devs[0], devs[1]
+	all := files(2)
+	writeAll(t, a, all)
+	a.Sync(t)
+	b.Sync(t)
+	for p := range all {
+		a.Remove(t, p)
+	}
+	if _, err := a.Disk.Sync(context.Background(), disk.SyncOptions{Yes: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := b.Disk.Sync(context.Background(), disk.SyncOptions{})
+
+	if !errors.Is(err, disk.ErrMassDelete) {
+		t.Fatalf("sync error = %v, want ErrMassDelete", err)
+	}
+	b.AssertFiles(t, all)
+	remote.AssertFiles(t, map[string]string{})
+}

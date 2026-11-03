@@ -164,6 +164,7 @@ func TestRemoteChangesAreDownloadedByPolling(t *testing.T) {
 	start(t, watch.Target{Name: "a", Disk: a.Disk})
 
 	b.Write(t, "from-b.txt", "hello")
+	b.Write(t, "stays.txt", "so the deletion below does not empty the folder")
 	b.Sync(t)
 	eventually(t, "a to download from-b.txt", func() bool { return a.Files(t)["from-b.txt"] == "hello" })
 

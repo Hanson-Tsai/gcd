@@ -127,8 +127,8 @@ Exec bits are never synced: trees get only `100644` entries and downloads are wr
 
 ## Mass-delete guard (#7, `disk/massdelete.go`)
 
-- Checked in `Disk.round` right after reconcile, before conflict naming, commit and push, so it re-runs on every retry. Deletions on both sides count together (`DeleteRemote` + `DeleteLocal`); the percentage is of the base (last synced) files, managed paths and paths excluded by the file rules left out.
-- A sync needs confirmation when it deletes more than `mass_delete_count` files, or more than `mass_delete_percent` % of the base files **and** more than 5 files (`minPercentDeletes`, so removing a file or two from a small folder never asks).
+- Checked at the end of `Disk.plan`, after reconcile and the re-check that drops files changed since the scan, before commit and push, so it re-runs on every retry. Deletions on both sides count together (`DeleteRemote` + `DeleteLocal`); the percentage is of the base (last synced) files, managed paths and paths excluded by the file rules left out.
+- A sync needs confirmation when it deletes more than `mass_delete_count` files, or more than `mass_delete_percent` % of the base files **and** more than 5 files (`minPercentDeletes`, so removing a file or two from a small folder does not ask), or when it deletes every base file one side still has, however few (an emptied folder or an unmounted drive; a one-file Disk asks when its only file is deleted).
 - Without `SyncOptions.Yes` it stops with `ErrMassDelete`, `Result.NeedsConfirm` and `Result.PendingDeletes`; the remote and the folder are untouched. The CLI adds the `gcd sync --yes` hint; `gcd watch` reports it as a warning (`watch.NeedsConfirm`) and never passes `Yes`.
 
 ## GitHub auth (#13)

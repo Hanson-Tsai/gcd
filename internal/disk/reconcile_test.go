@@ -84,7 +84,7 @@ func TestLocalEditBeatsRemoteDelete(t *testing.T) {
 	remote, a, b := synced(t, map[string]string{"doc.md": "v1"})
 
 	a.Remove(t, "doc.md")
-	a.Sync(t)
+	a.SyncYes(t)
 	b.Write(t, "doc.md", "v2 by b")
 	b.Sync(t)
 

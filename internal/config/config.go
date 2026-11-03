@@ -122,7 +122,8 @@ poll_seconds = 60
 
 # A sync that would delete more than mass_delete_percent % of the files (and
 # more than 5 files), or more than mass_delete_count files, stops and asks
-# for ` + "`gcd sync --yes`" + `.
+# for ` + "`gcd sync --yes`" + `. So does one that would delete every synced
+# file on either side (an emptied folder, a drive that is not mounted).
 mass_delete_percent = 20
 mass_delete_count = 50
 

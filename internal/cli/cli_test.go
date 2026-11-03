@@ -180,7 +180,7 @@ func TestLogAndRestoreSmoke(t *testing.T) {
 	if err := os.Remove(file); err != nil {
 		t.Fatal(err)
 	}
-	a.gcd(t, "sync")
+	a.gcd(t, "sync", "--yes") // deleting the only file needs confirmation
 
 	t.Chdir(a.folder)
 	if out := a.gcd(t, "log"); !strings.Contains(out, "+0 ~0 -1") || !strings.Contains(out, "+1 ~0 -0") {

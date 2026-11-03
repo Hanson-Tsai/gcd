@@ -325,9 +325,9 @@ func (r *round) needsConfirm() {
 
 // plan is the read-only part of a round, shared by Sync and Status: it
 // fetches the remote with fetch, applies the repo config and the file rules,
-// reconciles base, local and remote, checks the mass-delete limits, names
-// conflict copies and drops uploads whose file changed since the scan
-// (res.Skipped). It writes nothing outside the git-dir's fetched objects and
+// reconciles base, local and remote, names conflict copies, drops uploads
+// whose file changed since the scan (res.Skipped) and checks the mass-delete
+// limits. It writes nothing outside the git-dir's fetched objects and
 // the ref fetch moves.
 func (d *Disk) plan(ctx context.Context, fetch fetchFunc, st state, local scan.Result) (round, error) {
 	var r round
@@ -348,15 +348,17 @@ func (d *Disk) plan(ctx context.Context, fetch fetchFunc, st state, local scan.R
 	sides := applyRules(local, r.base, r.remote)
 	res.Rejected, r.excluded = sides.rejected, sides.excluded
 	r.plan = reconcile.Reconcile(sides.base, sides.local, sides.remote)
-	r.pendingDeletes, r.massDelete = checkMassDelete(r.plan, len(sides.base), cfg)
 	r.host, r.now = d.host, time.Now()
 	r.taken = takenPaths(localHashes(local), treeHashes(r.remote))
 	r.nameConflictCopies(r.plan)
 
 	// Re-check every file about to be uploaded: one changed since the scan
-	// sits out this round.
-	r.plan, res.Skipped, err = d.dropChanged(r.plan, local)
-	return r, err
+	// sits out this round, and so does not count as a deletion below.
+	if r.plan, res.Skipped, err = d.dropChanged(r.plan, local); err != nil {
+		return r, err
+	}
+	r.pendingDeletes, r.massDelete = checkMassDelete(r.plan, sides, cfg)
+	return r, nil
 }
 
 // summarize lists plan's actions as Conflicts, Uploaded and Downloaded.

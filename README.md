@@ -123,9 +123,10 @@ at the original path and the local one is renamed
 
 Mass deletes: a sync that would delete many files (more than
 `mass_delete_count`, default 50, or more than `mass_delete_percent`, default
-20 %, of the files once over 5 files) stops before changing anything, for
-example when an external drive is not mounted. Run `gcd sync --yes` if the
-deletions are intended.
+20 %, of the files once over 5 files) stops before changing anything. So does
+a sync that would delete every synced file on either side, however few, for
+example when the folder was emptied or an external drive is not mounted. Run
+`gcd sync --yes` if the deletions are intended.
 
 Status: `gcd status` fetches the remote and lists what the next sync would
 upload, download and turn into conflict copies, which files it would leave

@@ -126,8 +126,8 @@ func TestRestoreDeletedFileAtCommitUploadsOnNextSync(t *testing.T) {
 	a.Sync(t)
 	v2 := remote.Head(t)
 	a.Remove(t, "notes/plan.md")
-	a.Sync(t)
-	b.Sync(t)
+	a.SyncYes(t)
+	b.SyncYes(t)
 	b.AssertFiles(t, map[string]string{})
 
 	// b restores the deleted file from the commit that held v2.
@@ -155,7 +155,7 @@ func TestRestoreWithoutAtTakesNewestVersionBeforeDeletion(t *testing.T) {
 	a.Sync(t)
 	a.Remove(t, "a.txt")
 	a.Write(t, "other.txt", "o")
-	a.Sync(t)
+	a.SyncYes(t)
 	a.Write(t, "other.txt", "o2")
 	a.Sync(t)
 
@@ -180,7 +180,7 @@ func TestRestoreAtTime(t *testing.T) {
 	a.Sync(t)
 	nextSecond()
 	a.Remove(t, "a.txt")
-	a.Sync(t)
+	a.SyncYes(t)
 
 	log := logOf(t, a, "")
 	t1, t2, t3 := log[2].Time, log[1].Time, log[0].Time
