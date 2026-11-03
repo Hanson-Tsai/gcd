@@ -35,17 +35,25 @@ func CopyName(rel, host string, now time.Time, taken func(string) bool) string {
 }
 
 // keepAsCopy moves the local file at rel to the conflict copy path copy. It
-// never overwrites an existing file at copy.
-func keepAsCopy(root, rel, copy string) error {
+// never overwrites an existing file at copy. When rel no longer exists (the
+// user deleted it after the scan) there is nothing to keep: it reports
+// moved = false and no error.
+func keepAsCopy(root, rel, copy string) (moved bool, err error) {
 	from := filepath.Join(root, filepath.FromSlash(rel))
 	to := filepath.Join(root, filepath.FromSlash(copy))
+	if _, err := os.Lstat(from); os.IsNotExist(err) {
+		return false, nil
+	}
 	if _, err := os.Lstat(to); err == nil {
-		return fmt.Errorf("conflict copy %s already exists", copy)
+		return false, fmt.Errorf("conflict copy %s already exists", copy)
 	} else if !os.IsNotExist(err) {
-		return err
+		return false, err
 	}
 	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
-		return err
+		return false, err
 	}
-	return os.Rename(from, to)
+	if err := rename(from, to); err != nil {
+		return false, err
+	}
+	return true, nil
 }

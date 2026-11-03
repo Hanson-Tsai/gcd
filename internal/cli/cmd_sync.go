@@ -41,6 +41,9 @@ func runSync(ctx context.Context, e *env, args []string) error {
 	for _, c := range res.Conflicts {
 		fmt.Fprintf(e.stdout, "conflict %s: local version kept as %s\n", c.Path, c.Copy)
 	}
+	for _, p := range res.Skipped {
+		fmt.Fprintf(e.stdout, "skipped %s: changed during sync, next sync picks it up\n", p)
+	}
 	if len(res.Uploaded)+len(res.Downloaded) == 0 {
 		fmt.Fprintln(e.stdout, "up to date")
 	} else {
