@@ -61,7 +61,7 @@ The report goes to `plugins/gcd/evals/results/`, which git ignores.
 | `edit-does-not-sync` | An edit in the Disk does not cause a sync. |
 | `restore-deleted-file` | The agent restores a deleted file with log and restore, and says (in Chinese) that a sync uploads it. |
 | `restore-force-asks` | The agent asks before `restore --force`. The local edits stay. |
-| `watch-until-file-arrives` | The agent waits with `watch --json --until` for a file that the other machine uploads about 40 s later. Then it reads the file. |
+| `watch-until-file-arrives` | The agent waits with `watch --json --until` for a file that the other machine uploads 10 s after the watch starts. Then it reads the file. |
 | `init-github-no-token` | `/gcd:init` for a GitHub repo gives the command and the token permissions. The agent never asks for the token. |
 | `init-file-url-direct` | `/gcd:init` with a local bare repo runs `gcd init file://…` directly. |
 | `workflow-outdated-reminder` | `workflow_version` older than the local gcd makes the agent suggest `gcd workflow upgrade`. The agent does not run the command. |
@@ -70,6 +70,9 @@ The report goes to `plugins/gcd/evals/results/`, which git ignores.
 ## If a case fails before the agent starts
 
 - `world.sh: gcd is not on PATH`: put the gcd under test on your `PATH`.
+- `watch-until-file-arrives` times out: its `setup.sh` starts a background
+  uploader that must outlive the setup. If the eval runner stops it, the file
+  never arrives.
 - The agent gets `no_disk` for `notes`: the agent and `setup.sh` did not use
   the same `$HOME`. To find the cause, run the case with `--keep-temp` and
   look at the workspace and the home folder.

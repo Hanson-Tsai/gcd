@@ -10,8 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Hanson-Tsai/gcd/internal/config"
 	"github.com/Hanson-Tsai/gcd/internal/disk"
 	"github.com/Hanson-Tsai/gcd/internal/registry"
+	"github.com/Hanson-Tsai/gcd/internal/scan"
 	"github.com/Hanson-Tsai/gcd/internal/watch"
 )
 
@@ -73,6 +75,13 @@ func runWatch(ctx context.Context, e *env, args []string) error {
 		}
 		if untilPath, err = folderPath(entries[0].Folder, *until); err != nil {
 			return err
+		}
+		// A path gcd never downloads would make the wait endless.
+		if config.IsManaged(untilPath) {
+			return fmt.Errorf("--until %s: managed by gcd, never placed in the folder", untilPath)
+		}
+		if rej := scan.CheckPath(untilPath); rej != nil {
+			return fmt.Errorf("--until %s: gcd does not sync this name: %s", untilPath, rej.Detail)
 		}
 	}
 
@@ -232,7 +241,7 @@ func (p *watchPrinter) jsonEvent(ev watch.Event) {
 	}
 }
 
-// syncedJSON is the sync object of a "synced" event.
+// syncedJSON is the object of `sync --json` and of a watch "synced" event.
 func syncedJSON(name string, res disk.Result) *resultJSON {
 	r := newResultJSON(name, res)
 	r.Commit = ptr(res.Commit)

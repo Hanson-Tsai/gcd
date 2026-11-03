@@ -221,6 +221,8 @@ All events have these fields:
   - The first sync after the start also counts.
   - gcd watches only one Disk: the Disk of the current folder, or the Disk
     in `--disk`. If there is no such Disk, it is a usage error (exit code 2).
+  - gcd refuses a path that it never downloads: a path in `.gcd/` or
+    `.github/`, or a name that the file rules reject (for example `a:b.txt`).
   - Without `--json`, gcd writes one line before it stops.
 
 Ctrl+C operates as without `--json`: gcd waits until the current sync is

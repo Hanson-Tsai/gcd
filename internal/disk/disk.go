@@ -284,11 +284,8 @@ func (d *Disk) Status(ctx context.Context) (Result, error) {
 		r.needsConfirm()
 	}
 	r.res.summarize(r.plan)
-	raw, err := d.readBlobAt(ctx, r.remote, workflow.Path)
-	if err != nil {
-		return r.res, err
-	}
-	if raw != nil {
+	// Informational only: a workflow that cannot be read leaves it empty.
+	if raw, err := d.readBlobAt(ctx, r.remote, workflow.Path); err == nil && raw != nil {
 		if spec, err := workflow.Parse(raw); err == nil {
 			r.res.WorkflowVersion = spec.Pin.Version
 		}

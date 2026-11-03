@@ -222,6 +222,13 @@ func TestWatchUntilNeedsOneDisk(t *testing.T) {
 		t.Errorf("watch --until outside a disk: exit %d, stdout %q, stderr %q; want exit 2 asking for --disk", code, out, errOut)
 	}
 
+	for _, path := range []string{".gcd/config.toml", "a:b.txt"} {
+		var e jsonError
+		if code := a.gcdJSON(t, &e, "watch", "--json", "--disk", "notes", "--until", path); code != 1 || e.Error == nil {
+			t.Errorf("watch --until %s: exit %d, %+v; want an error (gcd never downloads it)", path, code, e.Error)
+		}
+	}
+
 	var e jsonError
 	if code := a.gcdJSON(t, &e, "watch", "--json", "--disk", "nope"); code != 1 || e.Error == nil || e.Error.Kind != "no_disk" {
 		t.Errorf("watch --disk nope: exit %d, %+v; want a no_disk error", code, e.Error)

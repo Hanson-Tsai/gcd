@@ -42,9 +42,7 @@ func runSync(ctx context.Context, e *env, args []string) error {
 		return err
 	}
 	if e.json {
-		out := newResultJSON(ent.Name, res)
-		out.Commit = ptr(res.Commit)
-		return writeJSON(e.stdout, out)
+		return writeJSON(e.stdout, syncedJSON(ent.Name, res))
 	}
 	for _, c := range res.Uploaded {
 		fmt.Fprintf(e.stdout, "up    %s %s\n", sign(c.Kind), c.Path)
