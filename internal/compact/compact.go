@@ -36,6 +36,9 @@ type Options struct {
 	GitDir string
 	// Remote is the repo's git URL (https or file://).
 	Remote string
+	// Token is the HTTPS password for Remote (a GitHub PAT, or the Actions
+	// GITHUB_TOKEN); empty for file:// remotes.
+	Token string
 	// RetentionDays overrides retention_days from the repo config when > 0.
 	RetentionDays int
 	// Now is the current time; zero means time.Now().
@@ -80,6 +83,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	store.SetToken(opts.Token)
 	head, err := store.Fetch(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("fetch: %w", err)

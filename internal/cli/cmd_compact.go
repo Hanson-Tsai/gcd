@@ -49,6 +49,8 @@ func runCompact(ctx context.Context, e *env, args []string) error {
 		}
 		opts = compact.Options{GitDir: filepath.Join(ent.StateDir, "git"), Remote: ent.Remote}
 	} else {
+		// In Actions, GITHUB_SERVER_URL is https://github.com, so the
+		// token comes from GCD_TOKEN (the workflow sets it to github.token).
 		url := *repo
 		if url == "" {
 			server, name := os.Getenv("GITHUB_SERVER_URL"), os.Getenv("GITHUB_REPOSITORY")
@@ -64,6 +66,11 @@ func runCompact(ctx context.Context, e *env, args []string) error {
 		defer os.RemoveAll(tmp)
 		opts = compact.Options{GitDir: filepath.Join(tmp, "git"), Remote: url}
 	}
+	token, err := remoteToken(opts.Remote)
+	if err != nil {
+		return err
+	}
+	opts.Token = token
 
 	res, err := compact.Run(ctx, opts)
 	if err != nil {
