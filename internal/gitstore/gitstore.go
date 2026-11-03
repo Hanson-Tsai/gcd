@@ -373,6 +373,7 @@ func run(ctx context.Context, gitDir string, env []string, stdin io.Reader, args
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "LANGUAGE=C")
 	cmd.Env = append(cmd.Env, env...)
 	cmd.Stdin = stdin
+	cmd.SysProcAttr = ownProcessGroup()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
