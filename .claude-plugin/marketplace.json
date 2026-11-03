@@ -1,0 +1,17 @@
+{
+  "name": "skills",
+  "owner": {
+    "name": "Hanson-Tsai",
+    "url": "https://github.com/Hanson-Tsai"
+  },
+  "description": "Claude Code plugins for gcd (GitHub Cloud Disk).",
+  "plugins": [
+    {
+      "name": "gcd",
+      "source": "./plugins/gcd",
+      "description": "Let Claude operate gcd safely: status, sync, history, restore and waiting for files from other machines.",
+      "category": "productivity",
+      "keywords": ["gcd", "sync", "cloud-disk", "github"]
+    }
+  ]
+}
