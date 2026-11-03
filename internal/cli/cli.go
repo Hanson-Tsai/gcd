@@ -61,7 +61,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "usage: gcd %s\n", c.usage)
 			return 2
 		}
-		fmt.Fprintln(stderr, "gcd:", err)
+		fmt.Fprintln(stderr, "gcd:", explain(err))
 		return 1
 	}
 	return 0
@@ -106,6 +106,10 @@ func openCurrentDisk() (*disk.Disk, registry.Entry, error) {
 	if err != nil {
 		return nil, ent, err
 	}
-	d, err := disk.Open(disk.Options{Folder: ent.Folder, Remote: ent.Remote, StateDir: ent.StateDir})
+	token, err := remoteToken(ent.Remote)
+	if err != nil {
+		return nil, ent, err
+	}
+	d, err := disk.Open(disk.Options{Folder: ent.Folder, Remote: ent.Remote, StateDir: ent.StateDir, Token: token})
 	return d, ent, err
 }

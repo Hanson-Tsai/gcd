@@ -32,6 +32,9 @@ type Options struct {
 	Remote   string // any git URL, including file://
 	StateDir string // per-Disk local state and git-dir; must be outside Folder
 	Host     string // machine name used as commit author; default: os.Hostname
+	// Token is the HTTPS password for Remote (a GitHub PAT); empty for
+	// file:// remotes. git receives it through its credential prompt only.
+	Token string
 }
 
 // SyncOptions tunes a single Sync. Later tickets add fields (e.g. Yes for
@@ -118,6 +121,7 @@ func Open(opts Options) (*Disk, error) {
 	if err != nil {
 		return nil, err
 	}
+	store.SetToken(opts.Token)
 	return &Disk{folder: folder, stateDir: stateDir, host: host, store: store}, nil
 }
 

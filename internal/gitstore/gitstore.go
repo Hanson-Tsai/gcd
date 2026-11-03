@@ -107,6 +107,8 @@ type Signature struct {
 // Store is a bare git-dir bound to one remote.
 type Store struct {
 	GitDir string
+	remote string // remote URL, for error messages
+	token  string // HTTPS password for the remote; see SetToken
 }
 
 // Open prepares gitDir as a bare repository whose "origin" remote is
@@ -116,7 +118,7 @@ func Open(ctx context.Context, gitDir, remoteURL string) (*Store, error) {
 	if err := CheckVersion(); err != nil {
 		return nil, err
 	}
-	s := &Store{GitDir: gitDir}
+	s := &Store{GitDir: gitDir, remote: remoteURL}
 	if _, err := os.Stat(filepath.Join(gitDir, "HEAD")); errors.Is(err, os.ErrNotExist) {
 		if err := os.MkdirAll(gitDir, 0o755); err != nil {
 			return nil, err
@@ -290,11 +292,20 @@ func (s *Store) Push(ctx context.Context, commit string) error {
 }
 
 func (s *Store) git(ctx context.Context, stdin io.Reader, args ...string) (string, error) {
-	return run(ctx, s.GitDir, nil, stdin, args...)
+	return s.gitEnv(ctx, nil, stdin, args...)
 }
 
+// gitEnv runs git on the git-dir with the remote's credentials (see auth.go).
 func (s *Store) gitEnv(ctx context.Context, env []string, stdin io.Reader, args ...string) (string, error) {
-	return run(ctx, s.GitDir, env, stdin, args...)
+	cred, err := s.credEnv()
+	if err != nil {
+		return "", err
+	}
+	out, err := run(ctx, s.GitDir, append(cred, env...), stdin, append(credArgs, args...)...)
+	if err != nil {
+		return "", s.classify(err)
+	}
+	return out, nil
 }
 
 // run executes system git with a fixed C locale (stable stderr) and no
@@ -325,8 +336,13 @@ type Error struct {
 
 func (e *Error) Error() string {
 	sub := ""
-	if len(e.Args) > 0 {
-		sub = e.Args[0]
+	for i := 0; i < len(e.Args); i++ {
+		if e.Args[i] == "-c" {
+			i++ // skip "-c name=value"
+			continue
+		}
+		sub = e.Args[i]
+		break
 	}
 	if e.Stderr != "" {
 		return fmt.Sprintf("git %s: %v: %s", sub, e.Err, e.Stderr)
