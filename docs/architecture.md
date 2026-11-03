@@ -61,6 +61,13 @@ Key invariants:
 
 Hooks later tickets plug into: lock and push retry go around fetch → push in `Sync` (#5). The mass-delete check goes between reconcile and commit (#7). The mtime/size re-check goes before commit and before replace (#8). `Status` is the same pipeline without commit, push or apply (#9). Managed paths `.gcd/` and `.github/` are filtered from local/remote before reconcile but kept in the new tree (#3).
 
+## History: `gcd log` / `gcd restore` (`disk/history.go`)
+
+- `Disk.Log(ctx, path)` fetches, then lists the remote's first-parent history newest first (`gitstore.History`, one `git log --name-status` call). Paths are matched literally (`GIT_LITERAL_PATHSPECS=1`); a directory path matches everything below it.
+- `Disk.Restore(ctx, path, RestoreOptions{At, Force})` writes one file's version into the folder only. It does not touch the base, the remote or the state, so the next Sync uploads it as an ordinary local add or modify.
+- `At` is a time (newest commit at or before it, by author time) or a commit hash. The zero `At` means the newest version that has the path, which for a deleted file is the version just before the deletion. `disk.ParseAt` reads the CLI's `--at`.
+- The retention boundary is the oldest commit still in history. Once compaction (#12) runs, that commit is the snapshot root. Times before it return `ErrBeforeRetention`. A commit outside the history returns `ErrUnknownCommit`, and a path missing at that point returns `ErrPathNotFound`. A different local file returns `ErrExists` unless `Force` is set.
+
 ## Testing
 
 - **Seam A**: `internal/disk` tests through `fixture.NewDevices(t, n)`. Each device has its own folder, state dir and injectable `Host`. Assertions use `Device.Files` / `AssertFiles`, `Remote.Files` / `AssertFiles` and `Remote.Log`.
