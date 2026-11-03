@@ -22,10 +22,15 @@ func TestCompactSmoke(t *testing.T) {
 	a.gcd(t, "init", remote.URL, a.folder) // commits the repo config now
 	a.gcd(t, "sync")
 
-	for _, args := range [][]string{{"compact"}, {"compact", "--local", "--run"}} {
+	for _, args := range [][]string{{"compact", "--local", "--run"}, {"compact", "--repo", remote.URL}} {
 		if msg := a.gcdFails(t, args...); !strings.Contains(msg, "usage") {
 			t.Errorf("gcd %v: stderr = %q, want usage", args, msg)
 		}
+	}
+	// Without a mode gcd compact starts the GitHub Actions workflow, which
+	// a file:// disk does not have.
+	if msg := a.gcdFails(t, "compact"); !strings.Contains(msg, "--local") {
+		t.Errorf("gcd compact on a file:// disk: stderr = %q, want a hint to use --local", msg)
 	}
 
 	out := a.gcd(t, "compact", "--local")

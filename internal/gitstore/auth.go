@@ -111,7 +111,9 @@ func (s *Store) classify(err error) error {
 	if s.token != "" {
 		ge.Stderr = strings.ReplaceAll(ge.Stderr, s.token, "***")
 	}
-	if strings.Contains(ge.Stderr, "refusing to allow a Personal Access Token to create or update workflow") {
+	// "refusing to allow a Personal Access Token (or: a GitHub App, as the
+	// Actions token is) to create or update workflow ..."
+	if strings.Contains(ge.Stderr, "refusing to allow a ") && strings.Contains(ge.Stderr, "to create or update workflow") {
 		return fmt.Errorf("%w: %w", ErrWorkflowsPermission, err)
 	}
 	for _, p := range authFailures {

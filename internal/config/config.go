@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/Hanson-Tsai/gcd/internal/workflow"
 )
 
 // Format is the newest repo format this gcd understands. Bump it only when the
@@ -188,8 +190,9 @@ func (f file) config() (Config, error) {
 		}
 	}
 	check(f.RetentionDays >= 1, "retention_days must be at least 1, got %d", f.RetentionDays)
-	check(len(strings.Fields(f.CompactSchedule)) == 5,
-		"compact_schedule must be a cron expression with 5 fields, got %q", f.CompactSchedule)
+	if err := workflow.CheckSchedule(f.CompactSchedule); err != nil {
+		errs = append(errs, err) // it goes verbatim into the compaction workflow
+	}
 	check(f.MaxFileMB >= 1 && f.MaxFileMB <= 100, "max_file_mb must be between 1 and 100, got %d", f.MaxFileMB)
 	check(f.DebounceSeconds >= 1, "debounce_seconds must be at least 1, got %d", f.DebounceSeconds)
 	check(f.PollSeconds >= 1, "poll_seconds must be at least 1, got %d", f.PollSeconds)
