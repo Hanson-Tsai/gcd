@@ -9,15 +9,16 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | Package | Role | Status |
 |---|---|---|
 | `cmd/gcd` | `main`: wires signals and calls `cli.Run` | done |
-| `internal/cli` | Subcommands, standard-library `flag` only. One file per command (`cmd_<name>.go`) that calls `register(...)` from `init()`; `cli.go` holds dispatch, the git version check and `openCurrentDisk` | `init`, `sync` |
+| `internal/cli` | Subcommands, standard-library `flag` only. One file per command (`cmd_<name>.go`) that calls `register(...)` from `init()`; `cli.go` holds dispatch, the git version check and `openCurrentDisk` | `init`, `sync`, `config edit` |
 | `internal/disk` | **Seam A.** `Open(Options)` / `Sync(ctx, SyncOptions) (Result, error)`. Orchestrates one sync, owns the local state file (`state.go`), names conflict copies | full three-way sync (#4) |
 | `internal/scan` | Walk the folder and produce path → git blob hash plus size and mtime. Ignore rules, file-name policy and the large-file limit go here (#6) | regular files only |
 | `internal/reconcile` | Pure three-way rules: `Reconcile(base, local, remote) []Action` | done (#4) |
 | `internal/gitstore` | Wraps system git (≥ 2.30) on a bare git-dir: fetch, read tree, write blobs/tree/commit, push | done for #2 |
 | `internal/apply` | Atomic writes to the folder (temp file + rename, retried on Windows), local deletes, conflict copies (`CopyName`, rename local file aside), re-check before replace, stale temp cleanup (`RemoveTemp`) | done (#8) |
 | `internal/registry` | Per-machine Disk list (`registry.json`) and "which Disk am I in": `--disk <name>`, else the Disk containing cwd (matched by file identity), else the only Disk | done |
-| `internal/fixture` | Seam A test fixture: `file://` bare remote + N devices | done |
-| `internal/config`, `compact`, `auth`, `watch`, `workflow` | Not created yet; add them when their ticket lands (#3, #12, #13, #16, #15) | — |
+| `internal/config` | Repo config `.gcd/config.toml` (TOML): `Parse` / `ParseStrict`, defaults, `Format` check (`ErrFormatTooNew`), `IsManaged` | done (#3) |
+| `internal/fixture` | Seam A test fixture: `file://` bare remote + N devices; `Remote.Commit` plants files as another client | done |
+| `internal/compact`, `auth`, `watch`, `workflow` | Not created yet; add them when their ticket lands (#12, #13, #16, #15) | — |
 
 Dependency direction: `cli → disk, registry → scan, reconcile, gitstore, apply`. `reconcile` imports nothing from gcd. `fixture` imports `disk` and is used only from external `_test` packages, such as `package disk_test`.
 
@@ -73,11 +74,17 @@ Key invariants:
 - Commits are created only when there are local changes to upload. A download-only sync makes no commit.
 - Only `100644` entries are written: no exec bit, no symlinks.
 - **Edits during a sync are never lost or half-uploaded (#8).** A file whose size or mtime moved since the scan, or whose blob no longer matches the scanned hash, sits out the round (`Result.Skipped`). Its old base entry is kept, so the next sync sees the same three-way situation. Downloads are written to `.gcd-tmp-*` in the target directory and renamed over the target only after a last re-check. Scan never lists `.gcd-tmp-*`, and each Sync deletes leftovers under the lock.
-
 - **One Sync per Disk at a time.** The lock is an OS advisory lock (flock / LockFileEx), so the OS releases it when the holder dies; there is no stale-lock cleanup to do. A crash leaves only an unlocked file.
 - **Everything that depends on the remote lives in `Disk.round`**, which is re-run from fetch on a rejected push. Nothing outside the git-dir may change inside a round; apply and the state write come after it.
 
-Hooks later tickets plug into: the mass-delete check goes between reconcile and commit (#7). `Status` is the same pipeline without commit, push or apply (#9). Managed paths `.gcd/` and `.github/` are filtered from local/remote before reconcile but kept in the new tree (#3).
+Hooks later tickets plug into: the mass-delete check goes between reconcile and commit (#7). `Status` is the same pipeline without commit, push or apply (#9).
+
+## Repo config and managed paths (#3)
+
+- `.gcd/` and `.github/` (matched case-insensitively) are managed paths. `disk` drops them from base, local and remote before reconcile, so they are never written to the folder, never uploaded from it and never deleted for being absent. The commit keeps them because it starts from the remote tree.
+- `Sync` parses `.gcd/config.toml` in `Disk.round`, right after reading the fetched remote tree. A missing file means defaults. A newer `format` stops the sync before any change: `Result.FormatTooNew` plus a `*config.FormatError` that tells the user to upgrade. An invalid config also stops the sync. Later tickets read the parsed `config.Config` there (ignore rules and file limit #6, mass delete #7). Sync parses leniently and ignores unknown keys.
+- `disk.RepoConfig` / `SetRepoConfig` / `EnsureRepoConfig` read and commit the config as a single-file commit on top of the remote head (fast-forward push, `ErrRemoteChanged` if the remote moved). `gcd init` calls `EnsureRepoConfig`. `gcd config edit` opens `$EDITOR` and commits only if `ParseStrict` accepts the file, which also rejects unknown keys.
+- Bump `config.Format` only when the repo layout or meaning changes.
 
 ## History: `gcd log` / `gcd restore` (`disk/history.go`)
 

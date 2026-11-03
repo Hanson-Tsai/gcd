@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Hanson-Tsai/gcd/internal/apply"
+	"github.com/Hanson-Tsai/gcd/internal/config"
 	"github.com/Hanson-Tsai/gcd/internal/gitstore"
 	"github.com/Hanson-Tsai/gcd/internal/scan"
 )
@@ -127,6 +128,9 @@ func (d *Disk) Restore(ctx context.Context, path string, opts RestoreOptions) (R
 	rel, err := cleanRel(path)
 	if err != nil {
 		return res, err
+	}
+	if config.IsManaged(rel) {
+		return res, fmt.Errorf("%s is managed by gcd and never placed in the folder", rel)
 	}
 	c, err := d.pickCommit(ctx, rel, opts.At)
 	if err != nil {

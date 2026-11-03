@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Hanson-Tsai/gcd/internal/cli"
+	"github.com/Hanson-Tsai/gcd/internal/config"
 	"github.com/Hanson-Tsai/gcd/internal/fixture"
 	"github.com/Hanson-Tsai/gcd/internal/registry"
 )
@@ -101,8 +102,8 @@ func TestTwoNamedDisksOnOneMachine(t *testing.T) {
 	// Inside a subfolder of notes: no flag needed.
 	t.Chdir(filepath.Join(notes, "sub"))
 	m.gcd(t, "sync")
-	notesRemote.AssertFiles(t, map[string]string{"sub/n.txt": "note"})
-	docsRemote.AssertFiles(t, map[string]string{})
+	notesRemote.AssertFiles(t, map[string]string{"sub/n.txt": "note", config.Path: defaultConfig})
+	docsRemote.AssertFiles(t, map[string]string{config.Path: defaultConfig})
 
 	// Outside every disk: ambiguous without --disk, fine with it.
 	t.Chdir(outside)
@@ -113,7 +114,7 @@ func TestTwoNamedDisksOnOneMachine(t *testing.T) {
 		}
 	}
 	m.gcd(t, "sync", "--disk", "docs")
-	docsRemote.AssertFiles(t, map[string]string{"d.txt": "doc"})
+	docsRemote.AssertFiles(t, map[string]string{"d.txt": "doc", config.Path: defaultConfig})
 
 	// log and restore take --disk too; restore paths are folder-relative here.
 	if out := m.gcd(t, "log", "--disk", "docs"); !strings.Contains(out, "+1 ~0 -0") {
