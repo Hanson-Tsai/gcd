@@ -43,6 +43,34 @@ func TestRejectedPushIsRetriedAndDevicesConverge(t *testing.T) {
 	}
 }
 
+func TestRetryAfterRejectedPushTurnsARacingEditIntoAConflictCopy(t *testing.T) {
+	remote, devs := fixture.NewDevices(t, 2)
+	a, b := devs[0], devs[1]
+	a.Write(t, "doc.md", "v1")
+	a.Sync(t)
+	b.Sync(t)
+
+	a.Write(t, "doc.md", "from a")
+	b.Write(t, "doc.md", "from b")
+	interleaved := false
+	disk.SetBeforePush(a.Disk, func() {
+		if !interleaved {
+			interleaved = true
+			b.Sync(t) // b's edit lands after a fetched
+		}
+	})
+	res := a.Sync(t)
+	b.Sync(t)
+
+	if len(res.Conflicts) != 1 || res.Conflicts[0].Path != "doc.md" {
+		t.Fatalf("a conflicts = %+v, want one on doc.md", res.Conflicts)
+	}
+	want := map[string]string{"doc.md": "from b", res.Conflicts[0].Copy: "from a"}
+	remote.AssertFiles(t, want)
+	a.AssertFiles(t, want)
+	b.AssertFiles(t, want)
+}
+
 func TestConcurrentSyncsFromSeveralDevicesConverge(t *testing.T) {
 	// With n devices syncing once each at the same time, a device loses at
 	// most n-1 races, which is within the retry limit.
