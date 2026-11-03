@@ -175,3 +175,47 @@ func TestRenderRejectsValuesThatWouldBreakTheYAML(t *testing.T) {
 		}
 	}
 }
+
+func TestPreReleasesAreReleases(t *testing.T) {
+	for v, want := range map[string]bool{
+		"0.1.0-rc1":                         true,
+		"0.1.0-rc.2":                        true,
+		"1.0.0-beta1":                       true,
+		"dev":                               false,
+		"0.0.0-20261103080000-abcdef123456": false, // go build in a checkout
+		"0.1.0-rc1.0.20261103080000-abcdef123456":       false, // commits after the rc tag
+		"0.1.0-rc1.0.20261103080000-abcdef123456+dirty": false,
+		"0.1.0-rc1+dirty": false,
+	} {
+		if got := workflow.IsRelease(v); got != want {
+			t.Errorf("IsRelease(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
+
+func TestPinFindsAPreReleaseArchive(t *testing.T) {
+	sum := strings.Repeat("d", 64)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v0.1.0-rc1/checksums.txt" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(strings.Repeat("a", 64) + "  gcd_0.1.0-rc1_darwin_arm64.tar.gz\n" +
+			sum + "  gcd_0.1.0-rc1_linux_amd64.tar.gz\n"))
+	}))
+	t.Cleanup(srv.Close)
+	rel := workflow.Releases{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	pin, err := rel.Pin(context.Background(), "0.1.0-rc1")
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := workflow.Pin{Version: "0.1.0-rc1", SHA256: sum, URL: srv.URL + "/v0.1.0-rc1/gcd_0.1.0-rc1_linux_amd64.tar.gz"}
+	if pin != want {
+		t.Errorf("Pin = %+v, want %+v", pin, want)
+	}
+	if _, err := workflow.Render(workflow.Spec{Pin: pin, Schedule: "17 3 * * 0"}); err != nil {
+		t.Errorf("Render with a pre-release pin: %v", err)
+	}
+}

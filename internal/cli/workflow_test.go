@@ -235,6 +235,32 @@ func TestDevBuildInitSkipsTheWorkflowAndUpgradeNeedsAVersion(t *testing.T) {
 	}
 }
 
+// Real-GitHub testing uses pre-release tags such as v0.1.0-rc1.
+func TestPreReleaseBuildsPinTheirRelease(t *testing.T) {
+	w := newGitHubWorld(t, goodToken+"\n")
+	rel := fakeReleases(t, "0.1.0-rc1", "0.1.0-rc2")
+	cli.UseReleases(t, rel, "0.1.0-rc1")
+
+	if code, _, errOut := w.m.run(t, "init", "alice/notes", w.m.folder); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, errOut)
+	}
+	if spec, ok := remoteWorkflow(t, w.remote()); !ok || spec.Pin.Version != "0.1.0-rc1" ||
+		!strings.HasSuffix(spec.Pin.URL, "/v0.1.0-rc1/gcd_0.1.0-rc1_linux_amd64.tar.gz") {
+		t.Fatalf("workflow = %+v, %v; want pinned to 0.1.0-rc1", spec, ok)
+	}
+
+	code, out, errOut := w.m.run(t, "workflow", "upgrade", "--version", "0.1.0-rc2")
+	if code != 0 {
+		t.Fatalf("upgrade --version 0.1.0-rc2: exit %d: %s", code, errOut)
+	}
+	if spec, _ := remoteWorkflow(t, w.remote()); spec.Pin.Version != "0.1.0-rc2" || spec.Pin.SHA256 != releaseSum("0.1.0-rc2") {
+		t.Errorf("workflow pin = %+v, want 0.1.0-rc2", spec.Pin)
+	}
+	if !strings.Contains(out, "0.1.0-rc1 -> 0.1.0-rc2") {
+		t.Errorf("upgrade output = %q, want both versions", out)
+	}
+}
+
 func TestWorkflowUpgradePinsTheRunningVersion(t *testing.T) {
 	w := newGitHubWorld(t, goodToken+"\n")
 	rel := fakeReleases(t, "1.2.3", "1.3.0")

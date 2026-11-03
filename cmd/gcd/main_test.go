@@ -1,8 +1,10 @@
 package main_test
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -37,5 +39,17 @@ func TestReleaseVersionIsEmbedded(t *testing.T) {
 		if !strings.Contains(string(out), s) {
 			t.Errorf("gcd version printed %q, want it to contain %q", out, s)
 		}
+	}
+}
+
+// Tags like v0.1.0-rc1 are published as GitHub pre-releases, so they are
+// never "latest".
+func TestPreReleaseTagsArePublishedAsPreReleases(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", ".goreleaser.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^release:\n(?:[ \t].*\n|\n)*?[ \t]+prerelease: auto[ \t]*$`).Match(b) {
+		t.Errorf(".goreleaser.yaml does not set release.prerelease: auto")
 	}
 }

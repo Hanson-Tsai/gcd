@@ -18,6 +18,8 @@ func TestResolve(t *testing.T) {
 		{"ldflag with v prefix", "v1.2.3", nil, "1.2.3"},
 		{"go install module@version", "", installed, "1.4.0"},
 		{"go build from a checkout", "", checkout, Dev},
+		{"goreleaser pre-release", "0.1.0-rc1", installed, "0.1.0-rc1"},
+		{"go install module@pre-release", "", &debug.BuildInfo{Main: debug.Module{Version: "v0.1.0-rc1"}}, "0.1.0-rc1"},
 		{"no build info", "", nil, Dev},
 	} {
 		if got := resolve(tc.ldflag, tc.bi); got != tc.want {
