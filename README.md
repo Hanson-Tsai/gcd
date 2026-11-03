@@ -141,6 +141,14 @@ To see all the commands of this build, type `gcd` with no arguments.
 In a synced folder, gcd finds the applicable Disk. In other folders, add
 `--disk <name>`.
 
+### JSON output
+
+For programs and agents, `status`, `sync`, `log`, `restore`, `version`, and
+`watch` print JSON when you add `--json`. Errors are JSON too, with a `kind`
+such as `needs_confirm`, `auth`, or `busy`. For the fields, refer to
+[docs/json.md](docs/json.md). The JSON output only gets new fields. Thus, a
+program that reads it continues to work with newer gcd versions.
+
 ### gcd watch
 
 `gcd watch` monitors all registered Disks:
@@ -153,6 +161,16 @@ In a synced folder, gcd finds the applicable Disk. In other folders, add
   warning. If you want to delete the files, type `gcd sync --yes`.
 - If you push Ctrl+C, gcd waits until the current sync is complete. To stop
   gcd immediately, push Ctrl+C again.
+
+Options:
+
+- `--disk <name>`: monitor only this Disk.
+- `--until <path>`: stop after a sync downloads this path from a different
+  machine (added, changed, or deleted). gcd then stops with exit code 0. Use
+  this option to wait for a file. The option operates on one Disk: the Disk of
+  the current folder, or the Disk in `--disk`.
+- `--json`: show one JSON object for each event. Refer to
+  [docs/json.md](docs/json.md#gcd-watch---json).
 
 ### Conflicts
 
@@ -280,14 +298,62 @@ repo.
 NOTE: gcd does not sync a rename that changes only the letter case, for
 example `notes.md` to `Notes.md`. Give the file a different name.
 
+## Claude Code plugin
+
+This repo is also a Claude Code plugin marketplace. The plugin `gcd` lets
+Claude use gcd for you: it shows the status, syncs, finds old versions,
+restores files, and waits for files from your other machines. The plugin
+needs gcd `0.1.0-rc2` or higher.
+
+To install the plugin, type these commands in Claude Code:
+
+```
+/plugin marketplace add Hanson-Tsai/gcd
+/plugin install gcd@skills
+```
+
+NOTE: The name of this marketplace is `skills`. If you already added a
+different marketplace with the name `skills`, the names conflict. Remove that
+marketplace first, or install from the full source:
+`claude plugin install gcd --marketplace Hanson-Tsai/gcd`.
+
+After you install the plugin, you can ask Claude in your own words, for
+example "What will my cloud disk sync?". You can also use these commands:
+
+| Command | What it does |
+|---|---|
+| `/gcd:status` | Shows what the next sync will upload, download, and skip. |
+| `/gcd:sync` | Does a sync. Claude looks at the status first. |
+| `/gcd:watch [path]` | Waits until a different machine uploads the file, then continues. |
+| `/gcd:log [path]` | Shows the history of the Disk or of one file. |
+| `/gcd:restore <path> [--at <when>]` | Restores an earlier or a deleted version of a file. |
+| `/gcd:init` | Checks the installation and gives you the `gcd init` command. |
+
+Claude obeys these rules:
+
+- Claude syncs only when you ask. Before each sync, it looks at the status.
+  If the sync will delete files or make conflict copies, Claude shows them to
+  you and asks first.
+- Claude does not add `--yes`. You decide about mass deletes.
+- Claude does not delete or write over conflict copies. You merge them.
+- Claude never asks for your token in the chat. You type the token only in
+  your own terminal (`gcd init`, `gcd login`).
+- Claude runs `gcd compact` and `gcd workflow upgrade` only when you ask.
+- Claude stops `gcd watch` after the event that it waited for.
+- Claude answers in your language.
+
 ## Release procedure
 
-This section is for maintainers. To make a release, push a `v*` tag, for
-example:
+This section is for maintainers. To make a release, do these steps:
 
-```sh
-git tag v1.2.3 && git push origin v1.2.3
-```
+1. Set `version` in `plugins/gcd/.claude-plugin/plugin.json` to the release
+   version without the `v` (for example `1.2.3`). Commit the change. The
+   plugin version and the gcd tag must always be the same.
+2. Push a `v*` tag, for example:
+
+   ```sh
+   git tag v1.2.3 && git push origin v1.2.3
+   ```
 
 Then `.github/workflows/release.yml` runs GoReleaser (`.goreleaser.yaml`).
 GoReleaser builds the six binaries with the version in them. Then it
