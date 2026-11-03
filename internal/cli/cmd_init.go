@@ -20,7 +20,7 @@ func init() {
 }
 
 func runInit(ctx context.Context, e *env, args []string) error {
-	fs := newFlags(e, "init")
+	fs := newDiskFlags(e, "init")
 	fs.Lookup("disk").Usage = "`name` of the new disk (default: the folder's name)"
 	if err := fs.Parse(args); err != nil {
 		return err

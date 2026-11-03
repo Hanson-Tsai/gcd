@@ -116,6 +116,13 @@ func TestTwoNamedDisksOnOneMachine(t *testing.T) {
 	docsRemote.AssertFiles(t, map[string]string{"d.txt": "doc"})
 }
 
+func TestDiskFlagOnlyOnDiskCommands(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := cli.Run(context.Background(), []string{"version", "--disk", "notes"}, &out, &errOut); code == 0 {
+		t.Error("gcd version --disk: exit 0, want an unknown-flag error")
+	}
+}
+
 func TestInitNamesDiskAfterFolderByDefault(t *testing.T) {
 	remote := fixture.NewRemote(t)
 	root := t.TempDir()

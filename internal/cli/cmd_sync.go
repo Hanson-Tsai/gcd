@@ -17,7 +17,7 @@ func init() {
 }
 
 func runSync(ctx context.Context, e *env, args []string) error {
-	fs := newFlags(e, "sync")
+	fs := newDiskFlags(e, "sync")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
