@@ -121,10 +121,15 @@ func openCurrentDisk(e *env) (*disk.Disk, registry.Entry, error) {
 	if err != nil {
 		return nil, ent, err
 	}
+	d, err := openEntry(ent)
+	return d, ent, err
+}
+
+// openEntry opens a registered Disk with its remote's token.
+func openEntry(ent registry.Entry) (*disk.Disk, error) {
 	token, err := remoteToken(ent.Remote)
 	if err != nil {
-		return nil, ent, err
+		return nil, err
 	}
-	d, err := disk.Open(disk.Options{Folder: ent.Folder, Remote: ent.Remote, StateDir: ent.StateDir, Token: token})
-	return d, ent, err
+	return disk.Open(disk.Options{Folder: ent.Folder, Remote: ent.Remote, StateDir: ent.StateDir, Token: token})
 }
