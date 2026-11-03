@@ -10,7 +10,7 @@ import (
 func init() {
 	register(command{
 		name:    "sync",
-		usage:   "sync",
+		usage:   "sync [--disk <name>]",
 		summary: "upload local changes and download remote changes",
 		run:     runSync,
 	})
@@ -24,7 +24,7 @@ func runSync(ctx context.Context, e *env, args []string) error {
 	if fs.NArg() != 0 {
 		return errUsage
 	}
-	d, _, err := openCurrentDisk()
+	d, _, err := openCurrentDisk(e)
 	if err != nil {
 		return err
 	}
