@@ -17,21 +17,22 @@ import (
 func init() {
 	register(command{
 		name:    "config",
-		usage:   "config edit",
+		usage:   "config edit [--disk <name>]",
 		summary: "edit the repo config in $EDITOR, check it and commit it",
 		run:     runConfig,
 	})
 }
 
 func runConfig(ctx context.Context, e *env, args []string) error {
-	fs := newFlags(e, "config")
-	if err := fs.Parse(args); err != nil {
+	fs := newDiskFlags(e, "config")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 || fs.Arg(0) != "edit" {
+	if len(pos) != 1 || pos[0] != "edit" {
 		return errUsage
 	}
-	d, _, err := openCurrentDisk()
+	d, _, err := openCurrentDisk(e)
 	if err != nil {
 		return err
 	}

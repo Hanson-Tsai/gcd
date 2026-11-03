@@ -283,16 +283,47 @@ func (s *Store) CommitTree(ctx context.Context, tree, parent string, sig Signatu
 	return strings.TrimSpace(out), err
 }
 
+// ErrPushRejected means the remote branch moved since the last Fetch (the
+// push was not a fast-forward, or lost a race for the ref lock). The caller
+// should fetch, rebuild its commit on the new head and push again.
+var ErrPushRejected = errors.New("push rejected: remote branch changed")
+
 // Push publishes commit as the remote branch. It is a plain (fast-forward
-// only) push, so a concurrent update on the remote makes it fail.
+// only) push, so a concurrent update on the remote makes it fail with an
+// error wrapping ErrPushRejected.
 func (s *Store) Push(ctx context.Context, commit string) error {
 	_, err := s.git(ctx, nil, "push", "--quiet", remoteName, commit+":refs/heads/"+Branch)
 	if err != nil {
+		if pushRaced(err) {
+			return fmt.Errorf("%w: %v", ErrPushRejected, err)
+		}
 		return err
 	}
 	// Record what we pushed as the known remote head.
 	_, err = s.git(ctx, nil, "update-ref", remoteRef, commit)
 	return err
+}
+
+// pushRaced reports whether a failed push lost to a concurrent update of the
+// remote branch, as opposed to failing for good (auth, network, hooks).
+func pushRaced(err error) bool {
+	var ge *Error
+	if !errors.As(err, &ge) {
+		return false
+	}
+	switch {
+	case strings.Contains(ge.Stderr, "[rejected]"):
+		return true // fetch first, non-fast-forward, stale info
+	case strings.Contains(ge.Stderr, "[remote rejected]"):
+		// Two receive-packs updating the same ref at once (seen with
+		// file:// remotes and on GitHub under contention).
+		for _, s := range []string{"lock", "failed to update ref", "incorrect old value"} {
+			if strings.Contains(ge.Stderr, s) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Store) git(ctx context.Context, stdin io.Reader, args ...string) (string, error) {

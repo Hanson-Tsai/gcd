@@ -105,7 +105,7 @@ func (d *Disk) commitFile(ctx context.Context, parent, path string, content []by
 		return "", err
 	}
 	if err := d.store.Push(ctx, commit); err != nil {
-		if now, ferr := d.store.Fetch(ctx); ferr == nil && now != parent {
+		if errors.Is(err, gitstore.ErrPushRejected) {
 			return "", ErrRemoteChanged
 		}
 		return "", fmt.Errorf("push: %w", err)

@@ -1,17 +1,13 @@
 package cli_test
 
 import (
-	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/Hanson-Tsai/gcd/internal/cli"
 	"github.com/Hanson-Tsai/gcd/internal/config"
 	"github.com/Hanson-Tsai/gcd/internal/fixture"
-	"github.com/Hanson-Tsai/gcd/internal/registry"
 )
 
 // TestMain lets the test binary double as $EDITOR: when GCD_TEST_EDITOR is
@@ -28,6 +24,9 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// defaultConfig is the repo config `gcd init` writes into an empty repo.
+var defaultConfig = string(config.DefaultTOML())
+
 // useEditor makes `gcd config edit` save content as the edited config.
 func useEditor(t *testing.T, content string) {
 	t.Helper()
@@ -42,17 +41,6 @@ func useEditor(t *testing.T, content string) {
 	for _, v := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(v, tmp)
 	}
-}
-
-// gcdFails runs gcd expecting a non-zero exit and returns stdout+stderr.
-func (m machine) gcdFails(t *testing.T, args ...string) string {
-	t.Helper()
-	t.Setenv(registry.HomeEnv, m.home)
-	var out bytes.Buffer
-	if code := cli.Run(context.Background(), args, &out, &out); code == 0 {
-		t.Fatalf("gcd %v exited 0, want failure: %s", args, out.String())
-	}
-	return out.String()
 }
 
 func newMachine(t *testing.T, name string) machine {
