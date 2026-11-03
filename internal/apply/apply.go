@@ -3,8 +3,11 @@
 // interrupted sync never leaves a half-written file. (os.Rename replaces an
 // existing target on Windows too.)
 //
+// A Conflict keeps both versions: the local file is renamed to its conflict
+// copy (Action.Copy) and the remote version is written at the original path.
+//
 // Re-checking the target right before replacement and cleaning up stale temp
-// files is ticket #8; conflict copies are ticket #4.
+// files is ticket #8.
 package apply
 
 import (
@@ -25,8 +28,8 @@ type BlobSource interface {
 	Blob(ctx context.Context, hash string) (io.ReadCloser, error)
 }
 
-// Apply performs the folder-side actions (Download, DeleteLocal) of plan under
-// root. Other ops are ignored.
+// Apply performs the folder-side actions (Download, DeleteLocal, Conflict) of
+// plan under root. Other ops are ignored.
 func Apply(ctx context.Context, root string, plan []reconcile.Action, src BlobSource) error {
 	for _, a := range plan {
 		var err error
@@ -35,6 +38,10 @@ func Apply(ctx context.Context, root string, plan []reconcile.Action, src BlobSo
 			err = download(ctx, root, a.Path, a.Hash, src)
 		case reconcile.DeleteLocal:
 			err = remove(root, a.Path)
+		case reconcile.Conflict:
+			if err = keepAsCopy(root, a.Path, a.Copy); err == nil {
+				err = download(ctx, root, a.Path, a.Hash, src)
+			}
 		}
 		if err != nil {
 			return fmt.Errorf("%s %s: %w", a.Op, a.Path, err)

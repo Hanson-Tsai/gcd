@@ -1,0 +1,65 @@
+# GoReleaser config for gcd. Run by .github/workflows/release.yml on a v* tag.
+# Local check:    go run github.com/goreleaser/goreleaser/v2@v2.18.3 check
+# Local dry run:  go run github.com/goreleaser/goreleaser/v2@v2.18.3 release --snapshot --clean
+#
+# Asset names are a contract with the compaction workflow (#15), which pins a
+# version and the SHA-256 of one archive from checksums.txt:
+#   gcd_<version>_<os>_<arch>.tar.gz   (linux, darwin)
+#   gcd_<version>_<os>_<arch>.zip      (windows)
+#   checksums.txt                      (sha256, "<hex>  <file>" per line)
+# <version> has no leading "v"; the tag is "v<version>".
+version: 2
+
+project_name: gcd
+
+before:
+  hooks:
+    - go mod tidy -diff
+
+builds:
+  - id: gcd
+    main: ./cmd/gcd
+    binary: gcd
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/Hanson-Tsai/gcd/internal/version.version={{ .Version }}
+      - -X github.com/Hanson-Tsai/gcd/internal/version.commit={{ .FullCommit }}
+      - -X github.com/Hanson-Tsai/gcd/internal/version.date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: gcd
+    ids: [gcd]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: Hanson-Tsai
+    name: gcd
+  draft: false
+  prerelease: auto

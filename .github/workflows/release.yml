@@ -1,0 +1,42 @@
+name: Release
+
+# Pushing a version tag (v1.2.3, v1.2.3-rc.1) builds gcd for macOS, Linux and
+# Windows on amd64 and arm64 and publishes the archives plus checksums.txt to
+# this repo's GitHub Releases. Config: .goreleaser.yaml.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # Same git setup as ci.yml, for the test step.
+      - name: Configure git
+        run: |
+          git config --global core.autocrlf false
+          git config --global user.name "gcd-ci"
+          git config --global user.email "gcd-ci@example.invalid"
+          git config --global init.defaultBranch main
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # GoReleaser needs the full history for the changelog
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: v2.18.3
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
