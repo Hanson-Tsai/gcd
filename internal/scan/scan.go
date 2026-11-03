@@ -12,13 +12,19 @@ package scan
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
+
+// TempPrefix starts the name of every temp file gcd writes into the folder
+// (see package apply). Such files are never listed.
+const TempPrefix = ".gcd-tmp-"
 
 // Entry is one local file as observed during the scan.
 type Entry struct {
@@ -42,6 +48,9 @@ func Scan(root string) (Result, error) {
 		if !d.Type().IsRegular() {
 			return nil // directories are walked; symlinks and specials are skipped
 		}
+		if strings.HasPrefix(d.Name(), TempPrefix) {
+			return nil
+		}
 		info, err := d.Info()
 		if err != nil {
 			return err
@@ -58,6 +67,21 @@ func Scan(root string) (Result, error) {
 		return nil
 	})
 	return res, err
+}
+
+// Changed reports whether the file at rel (slash-separated) differs from
+// what the scan saw: it appeared, disappeared, or its size or mtime moved.
+// A directory at rel counts as no file.
+func (r Result) Changed(root, rel string) (bool, error) {
+	e, scanned := r.Files[rel]
+	info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel)))
+	if errors.Is(err, fs.ErrNotExist) || (err == nil && info.IsDir()) {
+		return scanned, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !scanned || info.Size() != e.Size || !info.ModTime().Equal(e.ModTime), nil
 }
 
 // HashFile returns the git blob hash of the file at path, byte-for-byte.

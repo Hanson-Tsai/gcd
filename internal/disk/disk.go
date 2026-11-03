@@ -18,6 +18,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -77,8 +78,11 @@ type Result struct {
 	// Conflicts lists paths both sides changed differently. Each also shows
 	// up as an added copy in Uploaded and a modified path in Downloaded.
 	Conflicts []Conflict
-	Commit    string // commit pushed by this sync, "" if none
-	BaseTree  string // tree hash recorded as the new base ("" = nothing synced yet)
+	// Skipped lists local paths left for the next sync because they changed
+	// after the scan (e.g. an editor was still writing them).
+	Skipped  []string
+	Commit   string // commit pushed by this sync, "" if none
+	BaseTree string // tree hash recorded as the new base ("" = nothing synced yet)
 	// FormatTooNew: the repo format is newer than this gcd supports; the sync
 	// stopped before changing anything (the error is a *config.FormatError).
 	FormatTooNew bool
@@ -104,7 +108,8 @@ type Disk struct {
 	host     string
 	store    *gitstore.Store
 
-	beforePush func() // test hook, see export_test.go
+	afterScan  func() // test hooks, see export_test.go
+	beforePush func()
 }
 
 // Open prepares the Disk's state dir and git-dir (idempotent) and returns it.
@@ -177,9 +182,15 @@ func (d *Disk) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if err := apply.RemoveTemp(d.folder); err != nil {
+		return Result{}, err
+	}
 	local, err := scan.Scan(d.folder)
 	if err != nil {
 		return Result{}, fmt.Errorf("scan: %w", err)
+	}
+	if d.afterScan != nil {
+		d.afterScan()
 	}
 
 	var r round
@@ -200,24 +211,41 @@ func (d *Disk) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	}
 	res := r.res
 
-	if err := apply.Apply(ctx, d.folder, r.plan, d.store); err != nil {
+	out, err := apply.Apply(ctx, d.folder, r.plan, d.store, apply.Options{
+		Changed:  func(rel string) (bool, error) { return local.Changed(d.folder, rel) },
+		CopyName: r.copyNamer(d.folder),
+	})
+	if err != nil {
 		return res, err
 	}
+	for _, c := range out.Conflicts {
+		res.Conflicts = append(res.Conflicts, Conflict{Path: c.Path, Copy: c.Copy})
+	}
+	if len(out.Kept) > 0 {
+		res.Downloaded = without(res.Downloaded, out.Kept)
+		res.Skipped = append(res.Skipped, out.Kept...)
+		sort.Strings(res.Skipped)
+	}
 
-	st.BaseTree = r.newTree
+	st.BaseTree = r.baseTree
 	st.LastSync = time.Now().UTC()
 	if err := saveState(d.stateDir, st); err != nil {
 		return res, err
 	}
-	res.BaseTree = r.newTree
+	res.BaseTree = r.baseTree
 	return res, nil
 }
 
 // round is the outcome of one fetch -> reconcile -> commit -> push attempt.
 type round struct {
-	res     Result
-	plan    []reconcile.Action
-	newTree string // the tree now at the remote head
+	res  Result
+	plan []reconcile.Action
+	// baseTree is the new base: the remote head's tree, except that skipped
+	// paths keep their old base entry.
+	baseTree string
+	taken    map[string]bool // lower-cased paths on either side plus conflict copies
+	host     string
+	now      time.Time
 }
 
 // round fetches the remote, reconciles it with base and local and, when there
@@ -257,7 +285,24 @@ func (d *Disk) round(ctx context.Context, st state, local scan.Result, opts Sync
 		res.NeedsConfirm, res.PendingDeletes = true, n
 		return r, err
 	}
-	d.nameConflictCopies(plan, localFiles, remoteFiles)
+	r.host, r.now = d.host, time.Now()
+	r.taken = takenPaths(localFiles, remoteFiles)
+	r.nameConflictCopies(plan)
+
+	// Re-check every file about to be uploaded: one changed since the scan
+	// sits out this round, and so does one whose content no longer matches
+	// the scanned hash once written as a blob.
+	plan, res.Skipped, err = d.dropChanged(plan, local)
+	if err != nil {
+		return r, err
+	}
+	blobs, plan, skipped, err := d.writeBlobs(ctx, plan)
+	if err != nil {
+		return r, err
+	}
+	res.Skipped = append(res.Skipped, skipped...)
+	sort.Strings(res.Skipped)
+
 	for _, a := range plan {
 		switch a.Op {
 		case reconcile.Conflict:
@@ -271,9 +316,9 @@ func (d *Disk) round(ctx context.Context, st state, local scan.Result, opts Sync
 		}
 	}
 
-	newTree := remoteTree
+	entries, newTree := remote, remoteTree
 	if len(res.Uploaded) > 0 {
-		newTree, res.Commit, err = d.commit(ctx, remote, remoteHead, plan, res.Uploaded)
+		entries, newTree, res.Commit, err = d.commit(ctx, remote, remoteHead, plan, blobs, res.Uploaded)
 		if err != nil {
 			return r, err
 		}
@@ -284,8 +329,90 @@ func (d *Disk) round(ctx context.Context, st state, local scan.Result, opts Sync
 			return r, fmt.Errorf("push: %w", err)
 		}
 	}
-	r.plan, r.newTree = plan, newTree
+	r.plan, r.baseTree = plan, newTree
+	if len(res.Skipped) > 0 {
+		// A skipped path keeps its old base entry, so the next sync sees the
+		// same three-way situation again instead of mistaking the remote
+		// version for the base.
+		kept := make(map[string]gitstore.Entry, len(entries))
+		for p, e := range entries {
+			kept[p] = e
+		}
+		for _, p := range res.Skipped {
+			if e, ok := base[p]; ok {
+				kept[p] = e
+			} else {
+				delete(kept, p)
+			}
+		}
+		if r.baseTree, err = d.store.WriteTree(ctx, kept); err != nil {
+			return r, err
+		}
+	}
 	return r, nil
+}
+
+// dropChanged removes from plan every upload-side action (Upload,
+// DeleteRemote, Conflict) whose local file changed since the scan, and
+// returns those paths.
+func (d *Disk) dropChanged(plan []reconcile.Action, local scan.Result) ([]reconcile.Action, []string, error) {
+	var kept []reconcile.Action
+	var skipped []string
+	for _, a := range plan {
+		switch a.Op {
+		case reconcile.Upload, reconcile.DeleteRemote, reconcile.Conflict:
+			changed, err := local.Changed(d.folder, a.Path)
+			if err != nil {
+				return nil, nil, err
+			}
+			if changed {
+				skipped = append(skipped, a.Path)
+				continue
+			}
+		}
+		kept = append(kept, a)
+	}
+	return kept, skipped, nil
+}
+
+// writeBlobs stores the local file of every Upload and Conflict as a blob and
+// returns tree path -> blob hash (a Conflict's local file goes to its Copy).
+// An action whose blob differs from the scanned hash (the file was rewritten
+// in place keeping its size and mtime) is dropped from plan, and its path is
+// returned as skipped.
+func (d *Disk) writeBlobs(ctx context.Context, plan []reconcile.Action) (blobs map[string]string, kept []reconcile.Action, skipped []string, err error) {
+	var ups []reconcile.Action
+	var abs []string
+	for _, a := range plan {
+		if a.Op == reconcile.Upload || a.Op == reconcile.Conflict {
+			ups = append(ups, a)
+			abs = append(abs, filepath.Join(d.folder, filepath.FromSlash(a.Path)))
+		}
+	}
+	hashes, err := d.store.WriteBlobs(ctx, abs)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	blobs = map[string]string{}
+	drop := map[string]bool{}
+	for i, a := range ups {
+		if hashes[i] != a.Local {
+			drop[a.Path] = true
+			skipped = append(skipped, a.Path)
+			continue
+		}
+		dst := a.Path
+		if a.Op == reconcile.Conflict {
+			dst = a.Copy
+		}
+		blobs[dst] = hashes[i]
+	}
+	for _, a := range plan {
+		if !drop[a.Path] {
+			kept = append(kept, a)
+		}
+	}
+	return blobs, kept, skipped, nil
 }
 
 // backoff waits a short random time before push attempt n+1, so devices that
@@ -301,55 +428,76 @@ func backoff(ctx context.Context, n int) error {
 	}
 }
 
-// nameConflictCopies sets Copy on every Conflict action to a free conflict
-// copy name: not a path on either side nor another copy. Names are compared
-// case-insensitively so copies never collide on macOS or Windows.
-func (d *Disk) nameConflictCopies(plan []reconcile.Action, local, remote reconcile.Files) {
+// takenPaths is the lower-cased set of every path on either side.
+func takenPaths(local, remote reconcile.Files) map[string]bool {
 	taken := map[string]bool{}
 	for _, m := range []reconcile.Files{local, remote} {
 		for p := range m {
 			taken[strings.ToLower(p)] = true
 		}
 	}
-	isTaken := func(p string) bool { return taken[strings.ToLower(p)] }
-	now := time.Now()
+	return taken
+}
+
+// nameConflictCopies sets Copy on every Conflict action to a free conflict
+// copy name: not a path on either side nor another copy. Names are compared
+// case-insensitively so copies never collide on macOS or Windows.
+func (r *round) nameConflictCopies(plan []reconcile.Action) {
+	isTaken := func(p string) bool { return r.taken[strings.ToLower(p)] }
 	for i := range plan {
 		if plan[i].Op != reconcile.Conflict {
 			continue
 		}
-		plan[i].Copy = apply.CopyName(plan[i].Path, d.host, now, isTaken)
-		taken[strings.ToLower(plan[i].Copy)] = true
+		plan[i].Copy = apply.CopyName(plan[i].Path, r.host, r.now, isTaken)
+		r.taken[strings.ToLower(plan[i].Copy)] = true
 	}
 }
 
-// commit writes the uploaded blobs, builds the new tree on top of the remote
-// tree and commits it with the remote head as parent. A Conflict uploads the
-// local file at Path under its Copy name; the remote version stays at Path.
-func (d *Disk) commit(ctx context.Context, remote map[string]gitstore.Entry, parent string,
-	plan []reconcile.Action, changes []Change) (tree, commit string, err error) {
-	var treePaths, abs []string
-	for _, a := range plan {
-		dst := a.Path
-		switch a.Op {
-		case reconcile.Upload:
-		case reconcile.Conflict:
-			dst = a.Copy
-		default:
-			continue
+// copyNamer names conflict copies made while applying (a download that finds
+// the local file edited after the scan). Besides the rules of
+// nameConflictCopies, the name must also be free in the folder right now.
+func (r *round) copyNamer(folder string) func(rel string) string {
+	isTaken := func(p string) bool {
+		if r.taken[strings.ToLower(p)] {
+			return true
 		}
-		treePaths = append(treePaths, dst)
-		abs = append(abs, filepath.Join(d.folder, filepath.FromSlash(a.Path)))
+		_, err := os.Lstat(filepath.Join(folder, filepath.FromSlash(p)))
+		return err == nil
 	}
-	hashes, err := d.store.WriteBlobs(ctx, abs)
-	if err != nil {
-		return "", "", err
+	return func(rel string) string {
+		c := apply.CopyName(rel, r.host, r.now, isTaken)
+		r.taken[strings.ToLower(c)] = true
+		return c
 	}
-	entries := make(map[string]gitstore.Entry, len(remote)+len(treePaths))
+}
+
+// without returns changes minus those at the given paths.
+func without(changes []Change, paths []string) []Change {
+	drop := map[string]bool{}
+	for _, p := range paths {
+		drop[p] = true
+	}
+	var kept []Change
+	for _, c := range changes {
+		if !drop[c.Path] {
+			kept = append(kept, c)
+		}
+	}
+	return kept
+}
+
+// commit builds the new tree (the remote tree plus the written blobs, minus
+// remote deletes) and commits it with the remote head as parent. A Conflict
+// uploads the local file at Path under its Copy name; the remote version
+// stays at Path.
+func (d *Disk) commit(ctx context.Context, remote map[string]gitstore.Entry, parent string,
+	plan []reconcile.Action, blobs map[string]string, changes []Change) (entries map[string]gitstore.Entry, tree, commit string, err error) {
+	entries = make(map[string]gitstore.Entry, len(remote)+len(blobs))
 	for p, e := range remote {
 		entries[p] = e
 	}
-	for i, p := range treePaths {
-		entries[p] = gitstore.Entry{Mode: gitstore.RegularMode, Hash: hashes[i]}
+	for p, h := range blobs {
+		entries[p] = gitstore.Entry{Mode: gitstore.RegularMode, Hash: h}
 	}
 	for _, a := range plan {
 		if a.Op == reconcile.DeleteRemote {
@@ -357,11 +505,11 @@ func (d *Disk) commit(ctx context.Context, remote map[string]gitstore.Entry, par
 		}
 	}
 	if tree, err = d.store.WriteTree(ctx, entries); err != nil {
-		return "", "", err
+		return nil, "", "", err
 	}
 	sig := gitstore.Signature{Name: d.host, Email: "gcd@" + d.host}
 	commit, err = d.store.CommitTree(ctx, tree, parent, sig, CommitMessage(d.host, changes))
-	return tree, commit, err
+	return entries, tree, commit, err
 }
 
 // CommitMessage formats "sync from <host>: +added ~modified -deleted".

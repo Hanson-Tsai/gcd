@@ -14,7 +14,7 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | `internal/scan` | Walk the folder and produce path → git blob hash plus size and mtime. Ignore rules, file-name policy and the large-file limit go here (#6) | regular files only |
 | `internal/reconcile` | Pure three-way rules: `Reconcile(base, local, remote) []Action` | done (#4) |
 | `internal/gitstore` | Wraps system git (≥ 2.30) on a bare git-dir: fetch, read tree, write blobs/tree/commit, push | done for #2 |
-| `internal/apply` | Atomic writes to the folder (temp file + rename), local deletes, conflict copies (`CopyName`, rename local file aside) | basic + conflicts |
+| `internal/apply` | Atomic writes to the folder (temp file + rename, retried on Windows), local deletes, conflict copies (`CopyName`, rename local file aside), re-check before replace, stale temp cleanup (`RemoveTemp`) | done (#8) |
 | `internal/registry` | Per-machine Disk list (`registry.json`) and "which Disk am I in": `--disk <name>`, else the Disk containing cwd (matched by file identity), else the only Disk | done |
 | `internal/config` | Repo config `.gcd/config.toml` (TOML): `Parse` / `ParseStrict`, defaults, `Format` check (`ErrFormatTooNew`), `IsManaged` | done (#3) |
 | `internal/fixture` | Seam A test fixture: `file://` bare remote + N devices; `Remote.Commit` plants files as another client | done |
@@ -39,13 +39,15 @@ The synced folder holds only user files and never a `.git`. gcd syncs through th
 
 ```
 lock <state dir>/sync.lock (busy → ErrAlreadySyncing at once)
-scan.Scan(folder) ──────────────► local  {path → blob hash}
+apply.RemoveTemp(folder)           (leftover .gcd-tmp-* from an interrupted sync)
+scan.Scan(folder) ──────────────► local  {path → blob hash, size, mtime}
 ┌ round, retried up to 5× while Push fails with gitstore.ErrPushRejected
 gitstore.Fetch → TreeOf → ReadTree ► remote {path → Entry}
 gitstore.ReadTree(state.base_tree) ► base   {path → Entry}
                  │
 reconcile.Reconcile(base, local, remote) → []Action
    Conflict               → disk names Copy ("<stem> (conflict from <host> <date>)<ext>")
+   re-check uploads       → changed size/mtime, or blob ≠ scanned hash → Skipped
    Upload / DeleteRemote  → WriteBlobs → WriteTree(remote ± changes)
    + Conflict                (local file uploaded under Copy)
                             → CommitTree(parent = remote head,
@@ -55,8 +57,12 @@ reconcile.Reconcile(base, local, remote) → []Action
 └ (rejected 5× → ErrRemoteChanging; folder and base untouched)
    Download / DeleteLocal → apply.Apply (temp file + rename)
    + Conflict                (rename local file to Copy, then download remote to Path)
+                             re-check before replace: local edited since scan →
+                             Download moves it to a conflict copy first,
+                             DeleteLocal keeps it (Skipped)
                  │
-state.base_tree = new tree (or the remote tree when nothing was uploaded)
+state.base_tree = new tree (or the remote tree when nothing was uploaded),
+                  except paths skipped before commit keep their old base entry
 ```
 
 Key invariants:
@@ -67,10 +73,11 @@ Key invariants:
 - **Three-way rules**: one-sided change wins; same content on both sides (incl. both deleted) is a no-op; edit beats delete; different edits → remote stays at the path, local is renamed to a conflict copy and uploaded. Copy names avoid every local/remote path case-insensitively and get ` 2`, ` 3`… inside the parentheses when taken. A sync interrupted after push but before apply loses nothing: the next sync reconciles it through the same rules (at worst leaving a duplicate copy).
 - Commits are created only when there are local changes to upload. A download-only sync makes no commit.
 - Only `100644` entries are written: no exec bit, no symlinks.
+- **Edits during a sync are never lost or half-uploaded (#8).** A file whose size or mtime moved since the scan, or whose blob no longer matches the scanned hash, sits out the round (`Result.Skipped`). Its old base entry is kept, so the next sync sees the same three-way situation. Downloads are written to `.gcd-tmp-*` in the target directory and renamed over the target only after a last re-check. Scan never lists `.gcd-tmp-*`, and each Sync deletes leftovers under the lock.
 - **One Sync per Disk at a time.** The lock is an OS advisory lock (flock / LockFileEx), so the OS releases it when the holder dies; there is no stale-lock cleanup to do. A crash leaves only an unlocked file.
 - **Everything that depends on the remote lives in `Disk.round`**, which is re-run from fetch on a rejected push. Nothing outside the git-dir may change inside a round; apply and the state write come after it.
 
-Hooks later tickets plug into: the mass-delete check goes between reconcile and commit (#7). The mtime/size re-check goes before commit and before replace (#8). `Status` is the same pipeline without commit, push or apply (#9).
+Hooks later tickets plug into: the mass-delete check goes between reconcile and commit (#7). `Status` is the same pipeline without commit, push or apply (#9).
 
 ## Repo config and managed paths (#3)
 
