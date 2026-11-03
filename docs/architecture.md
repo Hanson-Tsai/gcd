@@ -19,9 +19,10 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | `internal/config` | Repo config `.gcd/config.toml` (TOML): `Parse` / `ParseStrict`, defaults, `Format` check (`ErrFormatTooNew`), `IsManaged` | done (#3) |
 | `internal/fixture` | Seam A test fixture: `file://` bare remote + N devices; `Remote.Commit` plants files as another client | done |
 | `internal/auth` | `ParseRepo` (owner/repo), `Tokens.Lookup` (`GCD_TOKEN`, then OS keychain via go-keyring, one entry per repo) / `Store`, `PromptToken`, `GitHub.Check` (REST + git smart-HTTP; base URLs injectable), `TokenHelp`. `auth/authtest`: fake GitHub (REST + `git http-backend`) and in-memory keychain | done (#13) |
-| `internal/compact`, `watch`, `workflow` | Not created yet; add them when their ticket lands (#12, #16, #15) | — |
+| `internal/watch` | `gcd watch`: `Run(ctx, []Target, Options)` keeps Disks in sync, one goroutine per Disk; fsnotify hints + stat snapshots, debounce, ls-remote poll; reports `Event`s | done (#16) |
+| `internal/compact`, `workflow` | Not created yet; add them when their ticket lands (#12, #15) | — |
 
-Dependency direction: `cli → disk, registry → scan, reconcile, gitstore, apply`. `reconcile` imports nothing from gcd. `fixture` imports `disk` and is used only from external `_test` packages, such as `package disk_test`.
+Dependency direction: `cli → watch → disk`; `cli → disk, registry → scan, reconcile, gitstore, apply`. `reconcile` imports nothing from gcd. `fixture` imports `disk` and is used only from external `_test` packages, such as `package disk_test`.
 
 ## On-disk layout (per machine)
 
@@ -91,7 +92,7 @@ Hooks later tickets plug into: the mass-delete check goes between reconcile and 
 
 - Checked in `Disk.round` right after reconcile, before conflict naming, commit and push, so it re-runs on every retry. Deletions on both sides count together (`DeleteRemote` + `DeleteLocal`); the percentage is of the base (last synced) files, managed paths excluded.
 - A sync needs confirmation when it deletes more than `mass_delete_count` files, or more than `mass_delete_percent` % of the base files **and** more than 5 files (`minPercentDeletes`, so removing a file or two from a small folder never asks).
-- Without `SyncOptions.Yes` it stops with `ErrMassDelete`, `Result.NeedsConfirm` and `Result.PendingDeletes`; the remote and the folder are untouched. The CLI adds the `gcd sync --yes` hint; `gcd watch` (#29 story) should report it as a warning and not pass `Yes`.
+- Without `SyncOptions.Yes` it stops with `ErrMassDelete`, `Result.NeedsConfirm` and `Result.PendingDeletes`; the remote and the folder are untouched. The CLI adds the `gcd sync --yes` hint; `gcd watch` reports it as a warning (`watch.NeedsConfirm`) and never passes `Yes`.
 
 ## GitHub auth (#13)
 
@@ -116,3 +117,23 @@ Hooks later tickets plug into: the mass-delete check goes between reconcile and 
 - CLI: smoke tests only (`internal/cli`). They use `GCD_HOME` to simulate separate machines. GitHub flows use `cli.UseFakeGitHub(t, authtest.GitHub{...}.Start(t), keyring, stdin)` (in `export_test.go`); the fake serves real bare repos over smart HTTP, so `init owner/repo` and `sync` with a token run offline.
 - Real-GitHub tests are opt-in: `TestE2E*` skip unless `GCD_E2E_REPO` and `GCD_TOKEN` are set; the **E2E** workflow runs them on manual dispatch only. See `docs/manual-verification.md`.
 - Tests run offline and must pass on macOS, Linux and Windows (CI matrix in `.github/workflows/ci.yml`).
+
+## Watch (#16, `internal/watch`)
+
+Per Disk, in its own goroutine (a failing Disk never stops the others):
+
+```
+start              → sync once (catch up)
+fsnotify event     → (re)arm the debounce timer (Chmod and .gcd-tmp-* ignored;
+                     new directories get watched too: fsnotify is not recursive)
+debounce fires     → sync if the folder differs from what the last sync accounted for
+poll tick          → sync if the last sync failed / was busy, or `Disk.RemoteChanged`
+                     (one `ls-remote` vs. the last fetched head);
+                     else arm the debounce timer if a stat rescan finds a change
+                     (fallback for missed events, watch limits, no watcher at all)
+```
+
+- "What the last sync accounted for" is a stat snapshot (path → size, mtime) taken before the sync, with the files the sync itself wrote (downloads, local deletes, uploaded conflict copies) taken from a snapshot after it, and `Result.Skipped` marked unsynced. So gcd's own writes do not trigger another sync, but an edit made during a sync does.
+- Debounce and poll interval come from `Disk.KnownRepoConfig` (the config at the last fetched head, no network), re-read after every sync; `watch.Options` overrides them (tests, `cli.SetWatchTiming`).
+- Outcomes: `ErrMassDelete` → `NeedsConfirm` event, not retried until the folder or the remote changes; `ErrAlreadySyncing` (a manual `gcd sync`) → `Busy`, retried after the debounce; other errors → `Failed` (repeats reported once), retried every poll interval.
+- Ctrl+C: `Run` stops starting syncs and waits for running ones, which get `context.WithoutCancel`. The system git runs in its own process group (`gitstore/procattr_*.go`) so the terminal's SIGINT does not kill it mid-sync. `main` restores default signal handling after the first Ctrl+C, so a second one kills gcd at once (an interrupted sync is safe: atomic writes, state saved last, OS-released lock).

@@ -86,3 +86,27 @@ By hand (keychain and prompts, once per OS):
 11. Linux without a Secret Service (e.g. SSH session, container): init says the
     keychain is unavailable and suggests `GCD_TOKEN`. With `GCD_TOKEN` set,
     everything works without the keychain.
+
+## gcd watch (#16)
+
+The smoke tests cover watching on the CI OS with `file://` remotes and short
+timings. By hand, once per OS (macOS, Linux, Windows):
+
+1. Two disks registered: `gcd watch`. Edit and save a file in each folder
+   several times within a few seconds: about 10 s after the last save, one
+   `up` line per disk, and one commit per burst on GitHub.
+2. Create a nested folder with files (`mkdir -p a/b && echo x > a/b/c.md`),
+   then edit `a/b/c.md` later: both are uploaded (new directories are watched).
+3. Push a change from another machine: it is downloaded within about 60 s.
+4. Delete most files of a disk: watch prints a warning with the
+   `gcd sync --disk <name> --yes` hint and the remote keeps the files.
+5. While watch is running, run `gcd sync` in another terminal: both succeed or
+   one reports the other is syncing; no errors in watch.
+6. Copy many large files in, wait ~10 s, press Ctrl+C while the `up` lines are
+   still coming: "stopping once running syncs finish", the sync completes and
+   gcd exits 0 (on Windows this checks that the child processes in their own
+   process group ignore the console Ctrl+C). A second Ctrl+C during that wait
+   kills gcd at once; the next `gcd sync` completes normally.
+7. Linux: `sysctl fs.inotify.max_user_watches=100` and a folder with more
+   directories: watch prints a "file watching limited" warning and still
+   uploads changes within about a poll interval plus the debounce.

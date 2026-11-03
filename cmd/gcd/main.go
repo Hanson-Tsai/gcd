@@ -16,6 +16,9 @@ func main() {
 		return
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// After the first Ctrl+C, a second one kills gcd at once (default
+	// handling). Commands like watch use the first to stop gracefully.
+	context.AfterFunc(ctx, stop)
 	code := cli.Run(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
