@@ -221,6 +221,34 @@ func TestRemoteFilesWithBadNamesAreLeftAlone(t *testing.T) {
 	remote.AssertFiles(t, planted)
 }
 
+// git refuses some names in an index when core.protectNTFS/protectHFS are on
+// (Git for Windows also refuses every NTFS-invalid name, such as the ones the
+// test above leaves on the remote). gcd never checks files out through git,
+// so its tree building must still carry such files, whether downloaded or
+// left on the remote. Forcing the guards on reproduces this on every OS.
+func TestNamesGitGuardsInAnIndexStillSync(t *testing.T) {
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'core.protectntfs=true' 'core.protecthfs=true'")
+	remote, devs := fixture.NewDevices(t, 1)
+	a := devs[0]
+	planted := map[string]string{
+		"GIT~1/notes.md":      "ntfs short name of .git",
+		"hfs/.g\u200cit/x.md": "hfs ignores the zero-width char",
+		"other.md":            "1",
+	}
+	remote.Commit(t, planted, "pushed by another git client")
+
+	a.Sync(t)
+	a.AssertFiles(t, planted)
+
+	a.Write(t, "sub/GIT~1/up.md", "uploaded")
+	a.Write(t, "other.md", "2")
+	a.Sync(t)
+
+	planted["sub/GIT~1/up.md"] = "uploaded"
+	planted["other.md"] = "2"
+	remote.AssertFiles(t, planted)
+}
+
 func TestPathsDifferingOnlyInCaseOnTheRemoteAreNotDownloaded(t *testing.T) {
 	remote, devs := fixture.NewDevices(t, 1)
 	a := devs[0]

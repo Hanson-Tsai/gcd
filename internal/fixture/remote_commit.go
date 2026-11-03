@@ -75,8 +75,13 @@ func (r *Remote) commit(t testing.TB, files, modes map[string]string, msg string
 func (r *Remote) gitEnv(t testing.TB, env []string, stdin string, args ...string) string {
 	t.Helper()
 	// Keep paths byte-exact: git on macOS would otherwise turn NFD names
-	// into NFC ones, and tests need to plant both.
-	pre := []string{"--git-dir=" + r.Dir, "-c", "core.precomposeunicode=false"}
+	// into NFC ones, and tests need to plant both. Tests also plant names
+	// git's index guards refuse (e.g. "a:b.txt" on Windows); nothing here is
+	// ever checked out, so the guards are off.
+	pre := []string{
+		"--git-dir=" + r.Dir, "-c", "core.precomposeunicode=false",
+		"-c", "core.protectNTFS=false", "-c", "core.protectHFS=false",
+	}
 	cmd := exec.Command("git", append(pre, args...)...)
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin = strings.NewReader(stdin)

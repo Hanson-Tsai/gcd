@@ -237,6 +237,14 @@ func (s *Store) Blob(ctx context.Context, hash string) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(out)), nil
 }
 
+// indexGuardsOff turns off git's refusal to put names into an index that
+// would be dangerous to check out on NTFS or HFS+ ("a:b.txt", "CON.md" and
+// "GIT~1" on Windows, ".g‌it" and others everywhere). gcd never checks
+// out through git; its index only builds trees, and must carry every name
+// the remote holds. With the guards on, update-index --index-info silently
+// skips such paths, which would delete them from the remote.
+var indexGuardsOff = []string{"-c", "core.protectNTFS=false", "-c", "core.protectHFS=false"}
+
 // WriteTree builds a (nested) tree object from slash-separated path -> Entry
 // and returns its hash. It uses a throwaway index file inside the git-dir.
 func (s *Store) WriteTree(ctx context.Context, entries map[string]Entry) (string, error) {
@@ -259,10 +267,19 @@ func (s *Store) WriteTree(ctx context.Context, entries map[string]Entry) (string
 	os.Remove(idxPath) // git wants to create the index itself
 	defer os.Remove(idxPath)
 	env := []string{"GIT_INDEX_FILE=" + idxPath}
-	if _, err := s.gitEnv(ctx, env, &in, "update-index", "-z", "--index-info"); err != nil {
+	if _, err := s.gitEnv(ctx, env, &in, append(indexGuardsOff, "update-index", "-z", "--index-info")...); err != nil {
 		return "", err
 	}
-	out, err := s.gitEnv(ctx, env, nil, "write-tree")
+	// --index-info skips paths git refuses (".git/x", "a/../b") yet exits 0;
+	// a tree without them would delete those files from the remote.
+	staged, err := s.gitEnv(ctx, env, nil, "ls-files", "-z")
+	if err != nil {
+		return "", err
+	}
+	if n := strings.Count(staged, "\x00"); n != len(entries) {
+		return "", fmt.Errorf("git refused %d of %d paths while building a tree", len(entries)-n, len(entries))
+	}
+	out, err := s.gitEnv(ctx, env, nil, append(indexGuardsOff, "write-tree")...)
 	return strings.TrimSpace(out), err
 }
 
