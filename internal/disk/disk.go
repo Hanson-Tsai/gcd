@@ -69,14 +69,20 @@ type Change struct {
 type Result struct {
 	Uploaded   []Change // local changes pushed to the remote
 	Downloaded []Change // remote changes written to the folder
-	Commit     string   // commit pushed by this sync, "" if none
-	BaseTree   string   // tree hash recorded as the new base ("" = nothing synced yet)
+	// Conflicts lists paths both sides changed differently. Each also shows
+	// up as an added copy in Uploaded and a modified path in Downloaded.
+	Conflicts []Conflict
+	Commit    string // commit pushed by this sync, "" if none
+	BaseTree  string // tree hash recorded as the new base ("" = nothing synced yet)
 }
 
-// ErrConflict is returned when both sides changed a path differently.
-// Conflict copies are ticket #4; until then Sync refuses before changing
-// anything.
-var ErrConflict = errors.New("both sides changed the same file; conflict handling not implemented yet")
+// Conflict is a path both sides changed to different content. The remote
+// version stays at Path; the local version was renamed to Copy, a conflict
+// copy, and uploaded too.
+type Conflict struct {
+	Path string
+	Copy string
+}
 
 // Disk is one opened Disk.
 type Disk struct {
@@ -165,17 +171,17 @@ func (d *Disk) Sync(ctx context.Context, _ SyncOptions) (Result, error) {
 		return res, fmt.Errorf("read base tree: %w", err)
 	}
 
-	plan := reconcile.Reconcile(treeHashes(base), localHashes(local), treeHashes(remote))
-	var uploadPaths []string
+	localFiles, remoteFiles := localHashes(local), treeHashes(remote)
+	plan := reconcile.Reconcile(treeHashes(base), localFiles, remoteFiles)
+	d.nameConflictCopies(plan, localFiles, remoteFiles)
 	for _, a := range plan {
 		switch a.Op {
 		case reconcile.Conflict:
-			return res, fmt.Errorf("%w: %s", ErrConflict, a.Path)
+			res.Conflicts = append(res.Conflicts, Conflict{Path: a.Path, Copy: a.Copy})
+			res.Uploaded = append(res.Uploaded, Change{Path: a.Copy, Kind: Added})
+			res.Downloaded = append(res.Downloaded, Change{Path: a.Path, Kind: Modified})
 		case reconcile.Upload, reconcile.DeleteRemote:
 			res.Uploaded = append(res.Uploaded, Change{Path: a.Path, Kind: kindOf(a.Remote, a.Local)})
-			if a.Op == reconcile.Upload {
-				uploadPaths = append(uploadPaths, a.Path)
-			}
 		case reconcile.Download, reconcile.DeleteLocal:
 			res.Downloaded = append(res.Downloaded, Change{Path: a.Path, Kind: kindOf(a.Local, a.Remote)})
 		}
@@ -183,7 +189,7 @@ func (d *Disk) Sync(ctx context.Context, _ SyncOptions) (Result, error) {
 
 	newTree := remoteTree
 	if len(res.Uploaded) > 0 {
-		newTree, res.Commit, err = d.commit(ctx, remote, remoteHead, plan, uploadPaths, res.Uploaded)
+		newTree, res.Commit, err = d.commit(ctx, remote, remoteHead, plan, res.Uploaded)
 		if err != nil {
 			return res, err
 		}
@@ -205,23 +211,54 @@ func (d *Disk) Sync(ctx context.Context, _ SyncOptions) (Result, error) {
 	return res, nil
 }
 
+// nameConflictCopies sets Copy on every Conflict action to a free conflict
+// copy name: not a path on either side nor another copy. Names are compared
+// case-insensitively so copies never collide on macOS or Windows.
+func (d *Disk) nameConflictCopies(plan []reconcile.Action, local, remote reconcile.Files) {
+	taken := map[string]bool{}
+	for _, m := range []reconcile.Files{local, remote} {
+		for p := range m {
+			taken[strings.ToLower(p)] = true
+		}
+	}
+	isTaken := func(p string) bool { return taken[strings.ToLower(p)] }
+	now := time.Now()
+	for i := range plan {
+		if plan[i].Op != reconcile.Conflict {
+			continue
+		}
+		plan[i].Copy = apply.CopyName(plan[i].Path, d.host, now, isTaken)
+		taken[strings.ToLower(plan[i].Copy)] = true
+	}
+}
+
 // commit writes the uploaded blobs, builds the new tree on top of the remote
-// tree and commits it with the remote head as parent.
+// tree and commits it with the remote head as parent. A Conflict uploads the
+// local file at Path under its Copy name; the remote version stays at Path.
 func (d *Disk) commit(ctx context.Context, remote map[string]gitstore.Entry, parent string,
-	plan []reconcile.Action, uploadPaths []string, changes []Change) (tree, commit string, err error) {
-	abs := make([]string, len(uploadPaths))
-	for i, p := range uploadPaths {
-		abs[i] = filepath.Join(d.folder, filepath.FromSlash(p))
+	plan []reconcile.Action, changes []Change) (tree, commit string, err error) {
+	var treePaths, abs []string
+	for _, a := range plan {
+		dst := a.Path
+		switch a.Op {
+		case reconcile.Upload:
+		case reconcile.Conflict:
+			dst = a.Copy
+		default:
+			continue
+		}
+		treePaths = append(treePaths, dst)
+		abs = append(abs, filepath.Join(d.folder, filepath.FromSlash(a.Path)))
 	}
 	hashes, err := d.store.WriteBlobs(ctx, abs)
 	if err != nil {
 		return "", "", err
 	}
-	entries := make(map[string]gitstore.Entry, len(remote)+len(uploadPaths))
+	entries := make(map[string]gitstore.Entry, len(remote)+len(treePaths))
 	for p, e := range remote {
 		entries[p] = e
 	}
-	for i, p := range uploadPaths {
+	for i, p := range treePaths {
 		entries[p] = gitstore.Entry{Mode: gitstore.RegularMode, Hash: hashes[i]}
 	}
 	for _, a := range plan {
