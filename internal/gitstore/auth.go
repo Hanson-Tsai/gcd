@@ -3,6 +3,7 @@ package gitstore
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -14,12 +15,15 @@ import (
 //     with a stale credential nor store gcd's token;
 //   - with no helper left, git asks GIT_ASKPASS, which is the gcd executable
 //     itself; ServeAskpass answers from GCD_ASKPASS_TOKEN, an environment
-//     variable set only on the git child process.
+//     variable set only on the git child process, and only when git asks for
+//     the remote's own host (GCD_ASKPASS_HOST), so a redirect to another
+//     host never gets the token.
 //
 // The token is never in argv, the remote URL, the git-dir config or an error.
 const (
 	askpassEnv      = "GCD_ASKPASS"
 	askpassTokenEnv = "GCD_ASKPASS_TOKEN"
+	askpassHostEnv  = "GCD_ASKPASS_HOST"
 	// TokenUser is the HTTPS username sent with a token; GitHub only checks
 	// the password.
 	TokenUser = "x-access-token"
@@ -68,6 +72,9 @@ func (s *Store) SetToken(token string) { s.token = token }
 // GIT_ASKPASS: it prints the answer to the prompt in os.Args[1] and returns
 // true, and the caller must exit right away. Otherwise it returns false.
 // main (and the gitstore tests' TestMain) call it first thing.
+//
+// It answers only prompts for the configured remote's host; any other
+// prompt gets an empty answer, so git fails to authenticate there.
 func ServeAskpass() bool {
 	if os.Getenv(askpassEnv) != "1" {
 		return false
@@ -76,12 +83,39 @@ func ServeAskpass() bool {
 	if len(os.Args) > 1 {
 		prompt = os.Args[1]
 	}
-	if strings.HasPrefix(prompt, "Username") {
+	want := os.Getenv(askpassHostEnv)
+	switch {
+	case want == "" || !strings.EqualFold(promptHost(prompt), want):
+		fmt.Println()
+	case strings.HasPrefix(prompt, "Username"):
 		fmt.Println(TokenUser)
-	} else {
+	default:
 		fmt.Println(os.Getenv(askpassTokenEnv))
 	}
 	return true
+}
+
+// promptHost is the host (with port) of the URL in a git credential prompt
+// such as "Password for 'https://user@github.com': ", or "".
+func promptHost(prompt string) string {
+	i, j := strings.Index(prompt, "'"), strings.LastIndex(prompt, "'")
+	if i < 0 || j <= i {
+		return ""
+	}
+	u, err := url.Parse(prompt[i+1 : j])
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// remoteHost is the host (with port) of an http(s) remote URL, or "".
+func remoteHost(remote string) string {
+	u, err := url.Parse(remote)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return ""
+	}
+	return u.Host
 }
 
 // credArgs come before the git subcommand: drop every configured credential
@@ -103,6 +137,7 @@ func (s *Store) credEnv() ([]string, error) {
 		"GIT_ASKPASS=" + exe,
 		askpassEnv + "=1",
 		askpassTokenEnv + "=" + s.token,
+		askpassHostEnv + "=" + remoteHost(s.remote),
 	}, nil
 }
 

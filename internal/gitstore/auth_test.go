@@ -174,3 +174,32 @@ func TestNoTokenFailsInsteadOfPrompting(t *testing.T) {
 		t.Fatalf("fetch without token: err = %v, want ErrAuth", err)
 	}
 }
+
+// A remote that redirects git elsewhere must not get the token there: the
+// askpass answers only for the configured remote's host.
+func TestTokenIsNotSentToARedirectedHost(t *testing.T) {
+	isolateUserGitConfig(t)
+	other := newGitServer(t)
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		target := strings.TrimSuffix(other.URL, "/"+filepath.Base(other.remote.Dir)) + r.URL.RequestURI()
+		http.Redirect(w, r, target, http.StatusFound)
+	}))
+	t.Cleanup(redirect.Close)
+	ctx := context.Background()
+	s, err := gitstore.Open(ctx, filepath.Join(t.TempDir(), "git"), redirect.URL+"/"+filepath.Base(other.remote.Dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetToken(goodToken)
+
+	if _, err := s.Fetch(ctx); err == nil {
+		t.Fatal("fetch through a redirect to another host succeeded")
+	}
+	other.mu.Lock()
+	defer other.mu.Unlock()
+	for _, p := range other.passwords {
+		if p == goodToken {
+			t.Fatal("the token was sent to the host the remote redirected to")
+		}
+	}
+}
