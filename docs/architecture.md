@@ -17,8 +17,9 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | `internal/apply` | Atomic writes to the folder (temp file + rename), local deletes, conflict copies (`CopyName`, rename local file aside) | basic + conflicts |
 | `internal/registry` | Per-machine Disk list (`registry.json`) and "which Disk am I in": `--disk <name>`, else the Disk containing cwd (matched by file identity), else the only Disk | done |
 | `internal/config` | Repo config `.gcd/config.toml` (TOML): `Parse` / `ParseStrict`, defaults, `Format` check (`ErrFormatTooNew`), `IsManaged` | done (#3) |
-| `internal/fixture` | Seam A test fixture: `file://` bare remote + N devices; `Remote.Commit` plants files as another client | done |
-| `internal/compact`, `auth`, `watch`, `workflow` | Not created yet; add them when their ticket lands (#12, #13, #16, #15) | — |
+| `internal/fixture` | Seam A test fixture: `file://` bare remote + N devices; `Remote.Commit` plants files as another client. Seam B: `Remote.CommitAt(CommitSpec{Time, Host, Files, Delete})` plants commits with chosen times, `Remote.History` reads them back with parents, idents and dates | done |
+| `internal/compact` | **Seam B.** `Run(ctx, Options{GitDir, Remote, RetentionDays, Now}) (Result, error)`: history compaction, used by `gcd compact --local` and `--run` | done (#12) |
+| `auth`, `watch`, `workflow` | Not created yet; add them when their ticket lands (#13, #16, #15) | — |
 
 Dependency direction: `cli → disk, registry → scan, reconcile, gitstore, apply`. `reconcile` imports nothing from gcd. `fixture` imports `disk` and is used only from external `_test` packages, such as `package disk_test`.
 
@@ -86,9 +87,20 @@ Hooks later tickets plug into: the mass-delete check goes between reconcile and 
 - `At` is a time (newest commit at or before it, by author time) or a commit hash. The zero `At` means the newest version that has the path, which for a deleted file is the version just before the deletion. `disk.ParseAt` reads the CLI's `--at`.
 - The retention boundary is the oldest commit still in history. Once compaction (#12) runs, that commit is the snapshot root. Times before it return `ErrBeforeRetention`. A commit outside the history returns `ErrUnknownCommit`, and a path missing at that point returns `ErrPathNotFound`. A different local file returns `ErrExists` unless `Force` is set.
 
+## History compaction: `gcd compact` (`internal/compact`)
+
+- `compact.Run` fetches the remote into `Options.GitDir`, reads `retention_days` from `.gcd/config.toml` at the head (`Options.RetentionDays` > 0 overrides it), and refuses a newer or invalid repo format before changing anything.
+- **Cut point**: the commit just before the oldest first-parent commit whose author time is at or after `Now - retention`. Everything from that commit on is kept, even a later commit with an older time (clock skew), so no commit dated inside the retention period is dropped. If the cut point is already the root, or there is none, Run does nothing (`Result.Compacted == false`). A second run is therefore a no-op.
+- **Snapshot root**: the cut point's tree, author and committer lines (so `gcd restore` sees the cut point's author time as the retention boundary), no parent, message `snapshot of history up to <time>`.
+- **Kept commits** are rebuilt from their raw objects (`gitstore.ReadCommits`): only the `parent` line changes; signatures (`gpgsig`, `mergetag`) are dropped. Author, committer, dates with their zone offsets, encoding and message stay byte for byte. Hashes are computed in Go (`gitstore.CommitHash`, SHA-1) to chain the commits, then written in one `hash-object -t commit --stdin-paths` call (`gitstore.WriteCommits`), which must return the same hashes. No `commit-tree` is involved. The rewrite depends only on the history, so compacting the same history twice gives the same commits.
+- Run checks the invariant (new head tree == old head tree) and then pushes with `gitstore.ForcePush`: `--force-with-lease=refs/heads/main:<head at start>`. A push made meanwhile makes it fail with `compact.ErrLeaseFailed` (`Result.LeaseFailed`), and that push is kept.
+- Only the first-parent chain survives. gcd never makes merges, so this matters only for repos edited with plain git.
+- `gcd compact --local` resolves the Disk like other commands and works in its git-dir (`<state dir>/git`), so only new objects are fetched. It does not take the sync lock: a concurrent sync on the same machine either wins the race (the lease fails) or fetches the new history next round. `gcd compact --run [--repo <url>]` is the Actions entry point (#15). It works in a temporary git-dir and defaults the repo to `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git`. The token must reach git through #13's auth (`GCD_TOKEN`), which gitstore applies to every git call. `gcd compact` without a mode is left for #15 (workflow_dispatch) and currently prints usage.
+- Devices need no special handling: their base is a tree hash, and `Fetch` uses a `+` refspec, so the rewritten history is picked up on the next sync. Old objects stay in each device's git-dir (`gc.auto=0`).
+
 ## Testing
 
 - **Seam A**: `internal/disk` tests through `fixture.NewDevices(t, n)`. Each device has its own folder, state dir and injectable `Host`. Assertions use `Device.Files` / `AssertFiles`, `Remote.Files` / `AssertFiles` and `Remote.Log`.
-- **Seam B** (compaction, #12) gets its own fixture for bare repos with chosen commit times.
+- **Seam B**: `internal/compact` tests run `compact.Run` on `fixture.NewRemote` repos built with `Remote.CommitAt` (chosen commit times) and a fixed `Now`. `compact/sync_test.go` checks Seam A devices across a compaction.
 - CLI: smoke tests only (`internal/cli`). They use `GCD_HOME` to simulate separate machines.
 - Tests run offline and must pass on macOS, Linux and Windows (CI matrix in `.github/workflows/ci.yml`).
