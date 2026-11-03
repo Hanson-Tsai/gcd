@@ -83,7 +83,12 @@ type Result struct {
 	Conflicts []Conflict
 	// Skipped lists local paths left for the next sync because they changed
 	// after the scan (e.g. an editor was still writing them).
-	Skipped  []string
+	Skipped []string
+	// Rejected lists paths left alone because of the file rules: names
+	// Windows cannot hold, paths differing only in case, files over the size
+	// limit, symlinks. Ignored files are not listed. A rejected path is
+	// neither uploaded, downloaded nor deleted on either side.
+	Rejected []scan.Rejection
 	Commit   string // commit pushed by this sync, "" if none
 	BaseTree string // tree hash recorded as the new base ("" = nothing synced yet)
 	// FormatTooNew: the repo format is newer than this gcd supports; the sync
@@ -189,7 +194,11 @@ func (d *Disk) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	if err := apply.RemoveTemp(d.folder); err != nil {
 		return Result{}, err
 	}
-	local, err := scan.Scan(d.folder)
+	rules, err := d.scanRules(ctx)
+	if err != nil {
+		return Result{FormatTooNew: errors.Is(err, config.ErrFormatTooNew)}, err
+	}
+	local, err := scan.Scan(d.folder, rules)
 	if err != nil {
 		return Result{}, fmt.Errorf("scan: %w", err)
 	}
@@ -283,14 +292,15 @@ func (d *Disk) round(ctx context.Context, st state, local scan.Result, opts Sync
 		return r, fmt.Errorf("read base tree: %w", err)
 	}
 
-	baseFiles, localFiles, remoteFiles := treeHashes(base), localHashes(local), treeHashes(remote)
-	plan := reconcile.Reconcile(baseFiles, localFiles, remoteFiles)
-	if n, err := checkMassDelete(plan, len(baseFiles), cfg); err != nil && !opts.Yes {
+	sides := applyRules(local, base, remote)
+	res.Rejected = sides.rejected
+	plan := reconcile.Reconcile(sides.base, sides.local, sides.remote)
+	if n, err := checkMassDelete(plan, len(sides.base), cfg); err != nil && !opts.Yes {
 		res.NeedsConfirm, res.PendingDeletes = true, n
 		return r, err
 	}
 	r.host, r.now = d.host, time.Now()
-	r.taken = takenPaths(localFiles, remoteFiles)
+	r.taken = takenPaths(localHashes(local), treeHashes(remote))
 	r.nameConflictCopies(plan)
 
 	// Re-check every file about to be uploaded: one changed since the scan
@@ -334,23 +344,31 @@ func (d *Disk) round(ctx context.Context, st state, local scan.Result, opts Sync
 		}
 	}
 	r.plan, r.baseTree = plan, newTree
-	if len(res.Skipped) > 0 {
-		// A skipped path keeps its old base entry, so the next sync sees the
-		// same three-way situation again instead of mistaking the remote
-		// version for the base.
+	if frozen := append(res.Skipped[:len(res.Skipped):len(res.Skipped)], sides.excluded...); len(frozen) > 0 {
+		// A skipped or excluded path keeps its old base entry, so the next
+		// sync sees the same three-way situation again instead of mistaking
+		// the remote version for the base.
 		kept := make(map[string]gitstore.Entry, len(entries))
 		for p, e := range entries {
 			kept[p] = e
 		}
-		for _, p := range res.Skipped {
-			if e, ok := base[p]; ok {
+		changed := false
+		for _, p := range frozen {
+			e, inBase := base[p]
+			if k, ok := kept[p]; ok == inBase && k == e {
+				continue
+			}
+			changed = true
+			if inBase {
 				kept[p] = e
 			} else {
 				delete(kept, p)
 			}
 		}
-		if r.baseTree, err = d.store.WriteTree(ctx, kept); err != nil {
-			return r, err
+		if changed {
+			if r.baseTree, err = d.store.WriteTree(ctx, kept); err != nil {
+				return r, err
+			}
 		}
 	}
 	return r, nil

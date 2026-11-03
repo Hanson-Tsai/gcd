@@ -87,6 +87,37 @@ By hand (keychain and prompts, once per OS):
     keychain is unavailable and suggests `GCD_TOKEN`. With `GCD_TOKEN` set,
     everything works without the keychain.
 
+## History compaction (#12)
+
+Offline coverage: `internal/compact` (Seam B, `file://` repos with chosen
+commit times, a lease race and a Seam A two-device sync across a compaction)
+and `internal/cli`. There, `TestCompactSmoke` covers `--local` and `--run`
+with the `GITHUB_*` defaults, and `TestCompactRunAsInActions` covers `--run`
+over HTTPS with `GCD_TOKEN` against the fake GitHub. What only GitHub can show:
+
+1. On a test private repo with history older than `retention_days`, run
+   `gcd compact --local` from a machine with the user's PAT (Contents +
+   Workflows). The push is accepted. `git log` on GitHub shows the snapshot
+   root and the kept commits with their original authors and dates.
+2. Same, but with `.github/workflows/gcd-compact.yml` present in squashed and
+   kept commits. Check whether GitHub accepts the force push (it rewrites
+   commits that touch workflow files). Repeat in step 3 with the Actions
+   `GITHUB_TOKEN`, which has no `workflows` permission. That is the riskiest
+   case (see #15).
+3. In Actions (#15): `GCD_TOKEN=${{ github.token }} ./gcd compact --run`
+   without `--repo` uses `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git` and
+   succeeds. The token never appears in the job log.
+4. Lease on real GitHub: start `gcd compact --local` and push from another
+   machine while it runs (or run it against a repo while another machine's
+   `gcd watch` is active). Compaction exits 1 with "lease failed" and the
+   other push stays on GitHub. GitHub reports this as `[rejected] (stale
+   info)`, which gcd classifies as a lease failure.
+5. A protected branch that blocks force pushes: compaction fails with
+   GitHub's `[remote rejected]` text, not a lease failure.
+6. After compaction, `gcd sync` on two other machines reports no conflicts,
+   and `gcd log` / `gcd restore --at <before snapshot>` report the retention
+   boundary as the snapshot's date.
+
 ## gcd watch (#16)
 
 The smoke tests cover watching on the CI OS with `file://` remotes and short
