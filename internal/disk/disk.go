@@ -146,8 +146,15 @@ const maxPushAttempts = 5
 // unchanged; running Sync again later is safe.
 var ErrRemoteChanging = errors.New("remote kept changing during sync; gave up pushing")
 
-// Sync runs one full sync. See the package doc for the steps.
+// Sync runs one full sync. See the package doc for the steps. It returns
+// ErrAlreadySyncing at once when another Sync of the same Disk is running.
 func (d *Disk) Sync(ctx context.Context, _ SyncOptions) (Result, error) {
+	unlock, err := d.lock()
+	if err != nil {
+		return Result{}, err
+	}
+	defer unlock()
+
 	st, err := loadState(d.stateDir)
 	if err != nil {
 		return Result{}, err

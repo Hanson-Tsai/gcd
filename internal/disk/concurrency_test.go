@@ -115,3 +115,37 @@ func TestPushRetriesAreBoundedAndLeaveTheFolderAlone(t *testing.T) {
 	a.AssertFiles(t, want)
 	b.AssertFiles(t, want)
 }
+
+// reopen opens a second Disk on dev's folder and state dir, as a second gcd
+// process on the same machine would (e.g. `gcd sync` while `gcd watch` runs).
+func reopen(t *testing.T, remote *fixture.Remote, dev *fixture.Device) *disk.Disk {
+	t.Helper()
+	d, err := disk.Open(disk.Options{Folder: dev.Folder, Remote: remote.URL, StateDir: dev.StateDir, Host: dev.Host})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func TestSecondSyncOnTheSameDiskFailsFastWhileOneIsRunning(t *testing.T) {
+	remote, devs := fixture.NewDevices(t, 1)
+	a := devs[0]
+	second := reopen(t, remote, a)
+
+	a.Write(t, "a.txt", "1")
+	var secondErr error
+	disk.SetBeforePush(a.Disk, func() {
+		_, secondErr = second.Sync(context.Background(), disk.SyncOptions{})
+	})
+	a.Sync(t)
+
+	if !errors.Is(secondErr, disk.ErrAlreadySyncing) {
+		t.Fatalf("second sync during the first: err = %v, want ErrAlreadySyncing", secondErr)
+	}
+	if n := len(remote.Log(t)); n != 1 {
+		t.Errorf("got %d commits, want 1", n)
+	}
+	if _, err := second.Sync(context.Background(), disk.SyncOptions{}); err != nil {
+		t.Errorf("sync after the first finished: %v", err)
+	}
+}
