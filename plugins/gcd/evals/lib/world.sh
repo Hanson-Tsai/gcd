@@ -4,8 +4,10 @@
 #
 #   remote.git/      a bare git repo: the "GitHub repo", reached as file://
 #   notes/           the Disk "notes" of this machine, the agent's machine.
-#                    Its gcd home is gcd's default under $HOME, the run's
-#                    temporary home, so the agent's plain `gcd` finds it.
+#                    The agent's plain `gcd` uses gcd's default home under
+#                    $HOME (the run's temporary home, shared with this
+#                    script). The eval sandbox makes $HOME read-only, so that
+#                    default home is a symlink to .gcd-home/ in the workspace.
 #   .other/notes/    the same Disk on a second machine, driven with `other`,
 #                    whose gcd home is .other/home (GCD_HOME).
 #
@@ -52,7 +54,22 @@ remote_put() {
 	rm -rf "$tmp"
 }
 
+# gcd's default home (see registry.Home) on this OS.
+default_gcd_home() {
+	case "$(uname -s)" in
+	Darwin) echo "$HOME/Library/Application Support/gcd" ;;
+	*) echo "$HOME/.local/share/gcd" ;;
+	esac
+}
+
 world_init() {
+	home=$(default_gcd_home)
+	if [ -e "$home" ] || [ -L "$home" ]; then
+		echo "world.sh: $home already exists; refusing to touch it" >&2
+		exit 1
+	fi
+	mkdir -p "$WORLD/.gcd-home" "$(dirname "$home")"
+	ln -s "$WORLD/.gcd-home" "$home"
 	git init -q --bare --initial-branch=main "$WORLD/remote.git"
 	mkdir -p "$WORLD/.other"
 	remote_put .gcd/config.toml "format = 1

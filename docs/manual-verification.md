@@ -232,7 +232,8 @@ With the published `v0.1.0-rc2`:
    `checksums.txt`) and check `gcd version --json` prints
    `"version":"0.1.0-rc2"` and `"dev":false`.
 2. Run the full eval suite with the rc2 binary on `PATH`:
-   `claude plugin eval plugins/gcd --scaffold --allow-tools Bash,Edit,Write`.
+   `claude plugin eval plugins/gcd --scaffold --allow-tools Bash Edit Write`
+   (see `plugins/gcd/evals/README.md` for `PATH`, the sandbox and `TMPDIR`).
    Every case passes. Record the score and the report link.
 3. In a clean Claude Code (no local marketplace of this repo):
    `/plugin marketplace add Hanson-Tsai/gcd`, then `/plugin install gcd@skills`.

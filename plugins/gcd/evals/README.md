@@ -10,9 +10,11 @@ The cases do not use GitHub or a token. Each `setup.sh` sources
 the run:
 
 - `remote.git/`: a bare git repo. It is the "GitHub repo" at a `file://` URL.
-- `notes/`: the Disk `notes` of the machine where the agent runs. Its gcd home
-  is the default home under `$HOME`. This is the temporary home of the run, so
-  the plain `gcd` command of the agent finds the Disk.
+- `notes/`: the Disk `notes` of the machine where the agent runs. The plain
+  `gcd` command of the agent uses the default gcd home under `$HOME`, the
+  temporary home of the run, which the setup script shares. That default home
+  is a symlink to `.gcd-home/` in the workspace, because the agent's sandbox
+  can write only in the workspace.
 - `.other/notes/`: the same Disk on a second machine. The setup script uses it
   to make remote changes and conflicts.
 
@@ -22,23 +24,34 @@ The repo config of the world sets `debounce_seconds = 1` and
 ## Requirements
 
 - Claude Code 2.1.269 or later (`claude plugin eval`).
-- The gcd version to test, as `gcd` on your `PATH`. For a release check, use
-  the release binary, for example `0.1.0-rc2`. The `workflow-outdated-reminder`
-  case needs a release build: a development build has no version to compare.
+- The gcd version to test, as `gcd` in a folder of the default `PATH`, for
+  example `/usr/local/bin`. The agent gets only a basic `PATH`, so a folder
+  that you added to your own `PATH` (for example `~/go/bin`) does not work.
+  For a release check, use the release binary, for example `0.1.0-rc2`. The
+  `workflow-outdated-reminder` case needs a release build: a development build
+  has no version to compare.
 - git 2.30 or later.
 - Linux or macOS. The setup scripts use bash.
+- The sandbox of Claude Code: on Linux, install `bubblewrap` and `socat`.
+  Without it, every run that has Bash is refused.
 
 ## Run
 
 From the repo root:
 
 ```sh
-claude plugin eval plugins/gcd --scaffold --allow-tools Bash,Edit,Write
+claude plugin eval plugins/gcd --scaffold --allow-tools Bash Edit Write
 ```
 
 - `--scaffold` runs each `setup.sh`. Without it, the cases have no world.
-- `--allow-tools Bash,Edit,Write` lets the agent run gcd. Without Bash, the
-  graders that check "did not run X" pass for the wrong reason.
+- `--allow-tools Bash Edit Write` lets the agent run gcd. Without Bash, the
+  graders that check "did not run X" pass for the wrong reason. Put the tool
+  list last on the command line.
+- If your temporary folder is `/tmp` (usual on Linux), set `TMPDIR` to a
+  different folder, for example
+  `TMPDIR=$HOME/evtmp claude plugin eval ...`. The runs are made in
+  `TMPDIR`, and the agent's sandbox refuses all writes below `/tmp`. Then
+  every gcd command of the agent fails with "Read-only file system".
 - To run one case, add `--case sync-mass-delete-asks`. To run one group, add
   `--tag safety`.
 - Each case runs 3 times, with and without the plugin. These are real model
@@ -67,7 +80,7 @@ The report goes to `plugins/gcd/evals/results/`, which git ignores.
 | `workflow-outdated-reminder` | `workflow_version` older than the local gcd makes the agent suggest `gcd workflow upgrade`. The agent does not run the command. |
 | `no-compact-unless-asked` | A question about the history size gets an explanation. The agent does not run `gcd compact`. |
 
-## If a case fails before the agent starts
+## If a case fails
 
 - `world.sh: gcd is not on PATH`: put the gcd under test on your `PATH`.
 - `watch-until-file-arrives` times out: its `setup.sh` starts a background
