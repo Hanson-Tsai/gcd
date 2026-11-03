@@ -9,8 +9,8 @@ Everything except `main` lives under `internal/`. Modules follow the spec's modu
 | Package | Role | Status |
 |---|---|---|
 | `cmd/gcd` | `main`: wires signals and calls `cli.Run` | done |
-| `internal/cli` | Subcommands, standard-library `flag` only. One file per command (`cmd_<name>.go`) that calls `register(...)` from `init()`; `cli.go` holds dispatch, the git version check and `openCurrentDisk` | `init`, `login`, `sync`, `config edit` |
-| `internal/disk` | **Seam A.** `Open(Options)` / `Sync(ctx, SyncOptions) (Result, error)`. Orchestrates one sync, owns the local state file (`state.go`), names conflict copies | full three-way sync (#4) |
+| `internal/cli` | Subcommands, standard-library `flag` only. One file per command (`cmd_<name>.go`) that calls `register(...)` from `init()`; `cli.go` holds dispatch, the git version check and `openCurrentDisk` | `init`, `login`, `sync`, `status`, `log`, `restore`, `compact`, `config edit`, `version` |
+| `internal/disk` | **Seam A.** `Open(Options)` / `Sync(ctx, SyncOptions) (Result, error)` / `Status(ctx) (Result, error)`. Orchestrates one sync, owns the local state file (`state.go`), names conflict copies | full three-way sync (#4) |
 | `internal/scan` | Walk the folder and produce path → git blob hash plus size and mtime, applying the file rules: ignore rules, file-name policy, size limit, regular files only (`Rules`, `Result.Rejected`). `Result.Exclude` applies them to remote/base paths; `Collisions` finds case collisions | done (#6) |
 | `internal/reconcile` | Pure three-way rules: `Reconcile(base, local, remote) []Action` | done (#4) |
 | `internal/gitstore` | Wraps system git (≥ 2.30) on a bare git-dir: fetch, read tree, write blobs/tree/commit, push | done for #2 |
@@ -35,7 +35,7 @@ Dependency direction: `cli → disk, registry → scan, reconcile, gitstore, app
     git/                         bare git-dir; remote "origin" = the Disk's URL
 ```
 
-The synced folder holds only user files and never a `.git`. gcd syncs through the remote's `main` branch only. Its local view is `refs/remotes/origin/main`.
+The synced folder holds only user files and never a `.git`. gcd syncs through the remote's `main` branch only. Its local view is `refs/remotes/origin/main`, moved by pushes and by the fetches of every other command (sync, init, config edit, log, restore, compact --local); `gcd status` fetches into `refs/gcd/peek/main` instead.
 
 ## Sync data flow (`disk.Sync`)
 
@@ -83,7 +83,14 @@ Key invariants:
 - **One Sync per Disk at a time.** The lock is an OS advisory lock (flock / LockFileEx), so the OS releases it when the holder dies; there is no stale-lock cleanup to do. A crash leaves only an unlocked file.
 - **Everything that depends on the remote lives in `Disk.round`**, which is re-run from fetch on a rejected push. Nothing outside the git-dir may change inside a round; apply and the state write come after it.
 
-Hooks later tickets plug into: the mass-delete check goes between reconcile and commit (#7). `Status` is the same pipeline without commit, push or apply (#9).
+A round is `Disk.plan` (fetch, repo config, file rules, reconcile, mass-delete count, conflict copy names, re-check of files about to be uploaded; read-only apart from the fetch) followed by the writing part (blobs, commit, push, new base tree). `Status` reuses `plan` (see below).
+
+## Status: `gcd status` (#9)
+
+- `Disk.Status(ctx) (Result, error)` runs the same `scanFolder` + `plan` as Sync and summarizes the plan into the same `Result` fields: `Uploaded`, `Downloaded`, `Conflicts` (with the copy name a sync would pick today), `Skipped` (files changing right now), `Rejected`, `FormatTooNew`, and `NeedsConfirm` / `PendingDeletes` when the next sync would need `--yes` (Status itself does not fail with `ErrMassDelete`). `Commit` and `BaseTree` stay empty.
+- It changes neither the folder, the remote, the base (`state.json`) nor `refs/remotes/origin/main`. It skips `RemoveTemp`, `WriteBlobs`, commit, push and apply.
+- **Fetch**: Status fetches with `gitstore.Store.Peek`, which downloads the objects but records the head only in the private ref `refs/gcd/peek/main` (`--refmap=` so git does not update remote-tracking refs opportunistically, `--no-write-fetch-head`). `refs/remotes/origin/main` is therefore exactly as `gcd status` found it, so an `ls-remote` comparison against it (`gcd watch`, #16) still notices an update that `gcd status` has already fetched. The peek ref is overwritten by the next Status and is never read by anything else.
+- **No sync lock.** Status writes nothing a Sync reads, so it runs while `gcd watch` or `gcd sync` holds the lock and never makes them fail with `ErrAlreadySyncing`. Its output is a snapshot: during a running sync it may still list changes that sync is about to finish.
 
 ## Repo config and managed paths (#3)
 

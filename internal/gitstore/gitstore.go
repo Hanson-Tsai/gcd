@@ -29,6 +29,8 @@ const Branch = "main"
 const (
 	remoteName = "origin"
 	remoteRef  = "refs/remotes/" + remoteName + "/" + Branch
+	// peekRef is where Peek records the remote head, apart from remoteRef.
+	peekRef = "refs/gcd/peek/" + Branch
 	// RegularMode is the only file mode gcd writes: no exec bit, no symlinks.
 	RegularMode = "100644"
 )
@@ -145,17 +147,35 @@ func Open(ctx context.Context, gitDir, remoteURL string) (*Store, error) {
 }
 
 // Fetch downloads the remote branch and returns its head commit, or "" when
-// the remote has no commits yet.
+// the remote has no commits yet. It moves the remote-tracking ref
+// (refs/remotes/origin/main), the device's published view of the remote.
 func (s *Store) Fetch(ctx context.Context) (string, error) {
-	if _, err := s.git(ctx, nil, "fetch", "--quiet", "--no-tags", "--prune", remoteName,
-		"+refs/heads/"+Branch+":"+remoteRef); err != nil {
+	return s.fetchInto(ctx, remoteRef, "--prune")
+}
+
+// Peek is Fetch for read-only callers such as `gcd status`: it downloads the
+// same objects but records the head only in a private ref, so the
+// remote-tracking ref keeps meaning "the remote as of this device's last
+// fetch for a sync" and anything comparing it with the remote still sees an
+// update as new. It writes no FETCH_HEAD either, so it can run beside a Sync
+// of the same git-dir.
+func (s *Store) Peek(ctx context.Context) (string, error) {
+	// --refmap= stops git from also updating remote-tracking refs
+	// opportunistically from a configured fetch refspec.
+	return s.fetchInto(ctx, peekRef, "--refmap=", "--no-write-fetch-head")
+}
+
+func (s *Store) fetchInto(ctx context.Context, ref string, flags ...string) (string, error) {
+	args := append([]string{"fetch", "--quiet", "--no-tags"}, flags...)
+	args = append(args, remoteName, "+refs/heads/"+Branch+":"+ref)
+	if _, err := s.git(ctx, nil, args...); err != nil {
 		// An empty remote has no refs/heads/main to fetch.
 		if strings.Contains(err.Error(), "couldn't find remote ref") {
 			return "", nil
 		}
 		return "", err
 	}
-	return s.resolve(ctx, remoteRef)
+	return s.resolve(ctx, ref)
 }
 
 func (s *Store) resolve(ctx context.Context, ref string) (string, error) {
