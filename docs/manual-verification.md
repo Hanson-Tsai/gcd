@@ -31,3 +31,58 @@ What only GitHub can show:
    `gcd version` prints `gcd version 0.0.1-rc.1`.
 7. Delete the test release and tag when done:
    `gh release delete v0.0.1-rc.1 --cleanup-tag --yes`.
+
+## GitHub auth (#13)
+
+Offline coverage: `internal/auth` (checks against a fake GitHub API,
+keychain lookup order, prompt), `internal/gitstore` (token reaches git only
+through `GIT_ASKPASS`, user credential helpers ignored, rejected token is
+`ErrAuth` with the token scrubbed) and `internal/cli` (`init owner/repo`,
+`login` and `sync` against a fake GitHub serving real repos over smart HTTP).
+
+Setup: a private throwaway repo `<you>/gcd-e2e` and fine-grained PATs on it:
+`FULL` (Contents, Workflows, Actions: read and write) and `READONLY`
+(Contents: read only).
+
+Automated part (manual trigger only):
+
+1. Set repository variable `GCD_E2E_REPO=<you>/gcd-e2e` and secrets
+   `GCD_E2E_TOKEN=FULL`, `GCD_E2E_READONLY_TOKEN=READONLY` on the gcd repo.
+2. Run the **E2E** workflow (Actions tab, *Run workflow*). It runs
+   `go test -run E2E ./...` on all three OSes. Locally:
+   `GCD_E2E_REPO=... GCD_TOKEN=... go test -count=1 -v -run E2E ./...`.
+3. It checks: `Check` passes for the private repo, refuses
+   `octocat/Hello-World` as public, reports a missing repo with how to create
+   it, reports an invalid token, lists Contents as missing for `READONLY`,
+   and two machines `init` + `sync` a file over HTTPS with the token, then an
+   invalid `GCD_TOKEN` makes `sync` print the token page and `gcd login`.
+
+By hand (keychain and prompts, once per OS):
+
+4. With `GCD_TOKEN` unset, `gcd init <you>/gcd-e2e ~/gcd-e2e`. Paste `FULL`
+   at the prompt: it is not echoed, init succeeds, and the token is in the
+   keychain (macOS: Keychain Access, item `gcd`, account
+   `github.com/<you>/gcd-e2e`; Windows: Credential Manager, `gcd:github.com/...`;
+   Linux: `secret-tool search service gcd`).
+5. `gcd sync` with no prompt. While it runs, `ps -ef | grep git` (Windows:
+   Task Manager command line) shows no token. `git --git-dir
+   "<gcd home>/disks/gcd-e2e/git" config --list` shows no token, and
+   `~/.gitconfig` helpers (osxkeychain/manager) gained no github.com entry.
+6. Revoke `FULL` on GitHub, then `gcd sync`: the error says the token was
+   rejected, links the pre-filled token page and suggests `gcd login`.
+   `gcd login <you>/gcd-e2e` with a new token, and `gcd sync` works again.
+7. `gcd init` a public repo: refused before any folder or registry entry is
+   created. `gcd init <you>/does-not-exist`: error with the
+   `https://github.com/new?...` link.
+8. A token **without Actions** write: init lists `Actions: read and write`
+   as missing. This verifies that GitHub checks the permission before looking
+   up the (nonexistent) workflow in the dispatch probe. If it instead passes,
+   the probe is wrong.
+9. A token **without Workflows** write: there is no probe. Once #15 installs
+   the workflow during init, init must fail with
+   "missing permission: Workflows (read and write)".
+10. Confirm that username `x-access-token` with a fine-grained PAT works for
+    git over HTTPS (step 5 passing covers it).
+11. Linux without a Secret Service (e.g. SSH session, container): init says the
+    keychain is unavailable and suggests `GCD_TOKEN`. With `GCD_TOKEN` set,
+    everything works without the keychain.

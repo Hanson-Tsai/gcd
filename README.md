@@ -18,7 +18,23 @@ or use object storage.
 - A **private** GitHub repo per Disk. gcd does not create repos and refuses
   public ones.
 - A fine-grained personal access token for that repo with **Contents:
-  read and write** and **Workflows: read and write**.
+  read and write**, **Workflows: read and write** and **Actions: read and
+  write** (Actions is used by `gcd compact`). `gcd init` prints a link to
+  GitHub's token page with these permissions pre-filled; select the repo
+  under *Repository access*.
+
+## Tokens
+
+`gcd init` asks for the token once and saves it in the OS keychain (macOS
+Keychain, Windows Credential Manager, or the Linux Secret Service), one entry
+per repo. `GCD_TOKEN`, when set, overrides the keychain for every repo, which
+is useful in CI and on Linux machines without a Secret Service. When a token
+expires or is revoked, every command says so; create a new one and run
+`gcd login <owner/repo>` to replace the saved token.
+
+gcd hands the token to git through git's credential prompt (`GIT_ASKPASS`),
+so it never appears in process arguments, the remote URL, git config or
+logs. gcd ignores your own git credential helpers for its repos.
 
 ## Install
 
@@ -78,6 +94,7 @@ prints the version, OS and architecture, for example
 
 ```sh
 gcd init <owner/repo> <folder>   # bind a folder to a private repo (once per machine)
+gcd login <owner/repo>           # replace the saved token (e.g. after it expired)
 gcd sync                         # upload local changes, download remote ones
 gcd status                       # show pending uploads, downloads and conflicts
 gcd watch                        # stay in the foreground and sync automatically

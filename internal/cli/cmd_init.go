@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/Hanson-Tsai/gcd/internal/auth"
 	"github.com/Hanson-Tsai/gcd/internal/config"
 	"github.com/Hanson-Tsai/gcd/internal/disk"
 	"github.com/Hanson-Tsai/gcd/internal/registry"
@@ -14,8 +16,8 @@ import (
 func init() {
 	register(command{
 		name:    "init",
-		usage:   "init [--disk <name>] <git-url> <folder>",
-		summary: "bind a folder to a git remote",
+		usage:   "init [--disk <name>] <owner/repo> <folder>",
+		summary: "bind a folder to a private GitHub repo",
 		run:     runInit,
 	})
 }
@@ -29,10 +31,31 @@ func runInit(ctx context.Context, e *env, args []string) error {
 	if fs.NArg() != 2 {
 		return errUsage
 	}
-	url := fs.Arg(0)
 	folder, err := filepath.Abs(fs.Arg(1))
 	if err != nil {
 		return err
+	}
+
+	// owner/repo (or a github.com URL) is the real thing. A file:// URL binds
+	// a local bare repo without GitHub checks (tests, offline use).
+	var (
+		url, token string
+		repo       auth.Repo
+		typed      bool // token was typed in and still needs saving
+	)
+	if arg := fs.Arg(0); strings.HasPrefix(arg, "file://") {
+		url = arg
+	} else {
+		if repo, err = auth.ParseRepo(arg); err != nil {
+			return err
+		}
+		url = github.RemoteURL(repo)
+		if token, typed, err = obtainToken(e, repo); err != nil {
+			return err
+		}
+		if err := github.Check(ctx, repo, token); err != nil {
+			return err
+		}
 	}
 
 	home, err := registry.Home()
@@ -54,13 +77,18 @@ func runInit(ctx context.Context, e *env, args []string) error {
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		return err
 	}
-	d, err := disk.Open(disk.Options{Folder: ent.Folder, Remote: ent.Remote, StateDir: ent.StateDir})
+	d, err := disk.Open(disk.Options{Folder: ent.Folder, Remote: ent.Remote, StateDir: ent.StateDir, Token: token})
 	if err != nil {
 		return err
 	}
 	createdConfig, err := d.EnsureRepoConfig(ctx)
 	if err != nil {
 		return err
+	}
+	if typed {
+		if err := tokens.Store(repo, token); err != nil {
+			return err
+		}
 	}
 	if err := reg.Save(); err != nil {
 		return err
