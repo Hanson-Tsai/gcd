@@ -24,6 +24,8 @@ type command struct {
 	usage   string // e.g. "init <git-url> <folder>"
 	summary string
 	run     func(ctx context.Context, e *env, args []string) error
+	// withoutGit skips the system git check for commands that never run git.
+	withoutGit bool
 }
 
 var commands = map[string]command{}
@@ -52,9 +54,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		printUsage(stderr)
 		return 2
 	}
-	if err := gitstore.CheckVersion(); err != nil {
-		fmt.Fprintln(stderr, "gcd:", err)
-		return 1
+	if !c.withoutGit {
+		if err := gitstore.CheckVersion(); err != nil {
+			fmt.Fprintln(stderr, "gcd:", err)
+			return 1
+		}
 	}
 	if err := c.run(ctx, e, args[1:]); err != nil {
 		if errors.Is(err, errUsage) || errors.Is(err, flag.ErrHelp) {
