@@ -4,9 +4,11 @@ package authtest
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -21,7 +23,18 @@ import (
 type Grant struct {
 	Repos         []string // "owner/repo" selected under Repository access
 	ContentsWrite bool
-	ActionsWrite  bool
+	// WorkflowsWrite allows pushes whose new commits add, change or delete
+	// files under .github/workflows/ (checked per commit, as GitHub is
+	// believed to; only enforced for repos made with AddRepo).
+	WorkflowsWrite bool
+	ActionsWrite   bool
+}
+
+// Dispatch is one workflow_dispatch that started a run.
+type Dispatch struct {
+	Repo     string // owner/repo
+	Workflow string // workflow file name
+	Ref      string
 }
 
 // GitHub answers the REST API (GET /repos/{o}/{r}, workflow dispatches) and
@@ -33,12 +46,23 @@ type GitHub struct {
 	Tokens map[string]Grant
 	// RateLimited makes every GET /repos call fail with a rate limit.
 	RateLimited bool
+	// NoRunDetails makes workflow dispatches answer 204 No Content without
+	// the run's id and URL, as the API did before return_run_details.
+	NoRunDetails bool
 	// GitRoot holds real bare repos (<owner>/<name>.git) served over smart
 	// HTTP; see AddRepo. Empty means only the push check is answered.
 	GitRoot string
 
-	mu      sync.Mutex
-	backend *cgi.Handler
+	mu         sync.Mutex
+	backend    *cgi.Handler
+	dispatches []Dispatch
+}
+
+// Dispatches returns the workflow runs started so far.
+func (f *GitHub) Dispatches() []Dispatch {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.dispatches)
 }
 
 // Start serves f until the test ends and returns a client pointed at it.
@@ -119,10 +143,16 @@ func (f *GitHub) serveRepo(w http.ResponseWriter, r *http.Request, name string) 
 
 // serveDispatch is POST /api/repos/{o}/{r}/actions/workflows/{id}/dispatches.
 // GitHub checks the fine-grained permission before looking up the workflow.
+// A workflow exists when the repo (see AddRepo) has the file
+// .github/workflows/{id} on the requested branch.
 func (f *GitHub) serveDispatch(w http.ResponseWriter, r *http.Request, path string) {
 	rest, _ := strings.CutPrefix(path, "/api/repos/")
-	name, _, _ := strings.Cut(rest, "/actions/")
+	name, wf, _ := strings.Cut(rest, "/actions/workflows/")
 	g, ok := f.Tokens[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+	var body struct {
+		Ref              string `json:"ref"`
+		ReturnRunDetails bool   `json:"return_run_details"`
+	}
 	switch {
 	case !ok:
 		jsonError(w, http.StatusUnauthorized, "Bad credentials")
@@ -131,9 +161,34 @@ func (f *GitHub) serveDispatch(w http.ResponseWriter, r *http.Request, path stri
 	case !g.ActionsWrite:
 		w.Header().Set("X-Accepted-GitHub-Permissions", "actions=write")
 		jsonError(w, http.StatusForbidden, "Resource not accessible by personal access token")
-	default:
+	case json.NewDecoder(r.Body).Decode(&body) != nil || body.Ref == "":
+		jsonError(w, http.StatusUnprocessableEntity, "Invalid request.")
+	case !f.hasFile(name, body.Ref, ".github/workflows/"+wf):
 		jsonError(w, http.StatusNotFound, "Not Found") // no such workflow: nothing runs
+	default:
+		f.dispatches = append(f.dispatches, Dispatch{Repo: name, Workflow: wf, Ref: body.Ref})
+		if f.NoRunDetails || !body.ReturnRunDetails {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		id := len(f.dispatches)
+		base := "http://" + r.Host
+		json.NewEncoder(w).Encode(map[string]any{
+			"workflow_run_id": id,
+			"run_url":         fmt.Sprintf("%s/api/repos/%s/actions/runs/%d", base, name, id),
+			"html_url":        fmt.Sprintf("%s/%s/actions/runs/%d", base, name, id),
+		})
 	}
+}
+
+// hasFile reports whether repo name (made with AddRepo) has path on branch
+// ref.
+func (f *GitHub) hasFile(name, ref, path string) bool {
+	if f.GitRoot == "" {
+		return false
+	}
+	dir := filepath.Join(f.GitRoot, filepath.FromSlash(name)+".git")
+	return exec.Command("git", "--git-dir="+dir, "cat-file", "-e", "refs/heads/"+ref+":"+path).Run() == nil
 }
 
 // serveGit is git smart HTTP for repo name: basic auth with the token as
@@ -158,7 +213,11 @@ func (f *GitHub) serveGit(w http.ResponseWriter, r *http.Request, name string) {
 		return
 	}
 	if f.GitRoot != "" {
-		f.backend.ServeHTTP(w, r)
+		h := *f.backend
+		if !g.WorkflowsWrite {
+			h.Env = append(slices.Clone(h.Env), noWorkflowsEnv+"=1") // read by the pre-receive hook
+		}
+		h.ServeHTTP(w, r)
 		return
 	}
 	if push && strings.HasSuffix(r.URL.Path, "/info/refs") {
@@ -189,8 +248,32 @@ func (f *GitHub) AddRepo(t testing.TB, name string, private bool) (dir string) {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(dir, "hooks", "pre-receive"), []byte(preReceive), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	return dir
 }
+
+const noWorkflowsEnv = "GCD_FAKE_NO_WORKFLOWS"
+
+// preReceive refuses, for tokens without Workflows write, any pushed commit
+// that touches .github/workflows/, with GitHub's message for PATs.
+const preReceive = `#!/bin/sh
+[ "$` + noWorkflowsEnv + `" = 1 ] || exit 0
+zero=0000000000000000000000000000000000000000
+while read old new ref; do
+  [ "$new" = "$zero" ] && continue
+  if [ "$old" = "$zero" ]; then range="$new"; else range="$old..$new"; fi
+  for c in $(git rev-list "$range"); do
+    f=$(git diff-tree --root --no-commit-id --name-only -r "$c" -- .github/workflows/ | head -n 1)
+    if [ -n "$f" ]; then
+      echo "refusing to allow a Personal Access Token to create or update workflow '$f' without 'workflow' scope" >&2
+      exit 1
+    fi
+  done
+done
+exit 0
+`
 
 func jsonError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")

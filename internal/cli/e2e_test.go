@@ -63,3 +63,28 @@ func TestE2EInitAndSyncAgainstGitHub(t *testing.T) {
 		t.Errorf("stderr leaks the token:\n%s", errOut)
 	}
 }
+
+// TestE2EWorkflowUpgradeAndDispatch pins the compaction workflow in the real
+// repo to a published gcd release and starts it. It does not wait for the
+// run: check the printed run page (docs/manual-verification.md, #15).
+// Needs GCD_E2E_GCD_VERSION, a published release (e.g. 0.1.0), because test
+// binaries are development builds.
+func TestE2EWorkflowUpgradeAndDispatch(t *testing.T) {
+	repo := e2eRepo(t)
+	ver := os.Getenv("GCD_E2E_GCD_VERSION")
+	if ver == "" {
+		t.Skip("set GCD_E2E_GCD_VERSION=<x.y.z> (a published gcd release) to pin the workflow")
+	}
+	root := t.TempDir()
+	a := machine{home: filepath.Join(root, "a-home"), folder: filepath.Join(root, "a-disk")}
+	a.gcd(t, "init", repo, a.folder)
+
+	if out := a.gcd(t, "workflow", "upgrade", "--version", ver); !strings.Contains(out, ver) {
+		t.Errorf("workflow upgrade = %q, want version %s", out, ver)
+	}
+	out := a.gcd(t, "compact")
+	if !strings.Contains(out, "https://github.com/"+repo+"/actions/") {
+		t.Errorf("gcd compact = %q, want a link to the run on github.com", out)
+	}
+	t.Log(out)
+}

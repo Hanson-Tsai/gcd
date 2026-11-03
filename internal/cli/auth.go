@@ -8,6 +8,8 @@ import (
 
 	"github.com/Hanson-Tsai/gcd/internal/auth"
 	"github.com/Hanson-Tsai/gcd/internal/gitstore"
+	"github.com/Hanson-Tsai/gcd/internal/version"
+	"github.com/Hanson-Tsai/gcd/internal/workflow"
 )
 
 // Seams for tests (see export_test.go).
@@ -15,6 +17,9 @@ var (
 	github auth.GitHub // zero value: api.github.com and github.com
 	tokens             = auth.DefaultTokens()
 	stdin  io.Reader   = os.Stdin
+
+	releases     workflow.Releases // zero value: gcd's GitHub releases
+	buildVersion = version.Version
 )
 
 // remoteToken is the token for a registered remote: "" for non-GitHub
@@ -49,6 +54,14 @@ func explain(err error) error {
 		}
 	}
 	if errors.Is(err, gitstore.ErrWorkflowsPermission) {
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			// gcd compact --run inside the workflow, pushing with github.token.
+			return fmt.Errorf("%w\nGitHub refused rewritten commits that touch %s: the Actions token cannot have\n"+
+				"the %s permission. Create a fine-grained token for this repo with %s and %s,\n"+
+				"add it as the repository secret %s (Settings > Secrets and variables > Actions);\n"+
+				"the workflow then pushes with it. Or run `gcd compact --local` on one of your machines",
+				err, workflow.Path, auth.PermWorkflows, auth.PermContents, auth.PermWorkflows, workflow.SecretName)
+		}
 		return fmt.Errorf("%w\nThe token is missing permission: %s. Edit it at https://github.com/settings/personal-access-tokens",
 			err, auth.PermWorkflows)
 	}

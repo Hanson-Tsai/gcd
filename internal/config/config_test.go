@@ -128,6 +128,7 @@ func TestInvalidConfigsAreRejected(t *testing.T) {
 		"wrong type":           `retention_days = "30"`,
 		"zero retention":       "retention_days = 0",
 		"bad cron":             `compact_schedule = "weekly"`,
+		"cron breaking yaml":   `compact_schedule = "17 3 * * 0\"#"`,
 		"file limit over 100":  "max_file_mb = 200",
 		"zero debounce":        "debounce_seconds = 0",
 		"zero poll":            "poll_seconds = 0",

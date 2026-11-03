@@ -4,7 +4,9 @@ name: E2E
 # Needs repository variable GCD_E2E_REPO (a private throwaway repo,
 # owner/repo) and secret GCD_E2E_TOKEN (fine-grained PAT on it with
 # Contents, Workflows and Actions read/write). Optional secret
-# GCD_E2E_READONLY_TOKEN (Contents: read only).
+# GCD_E2E_READONLY_TOKEN (Contents: read only). Optional variable
+# GCD_E2E_GCD_VERSION (a published gcd release) pins and dispatches the
+# compaction workflow in GCD_E2E_REPO.
 on:
   workflow_dispatch:
 
@@ -34,6 +36,7 @@ jobs:
       - name: E2E tests
         env:
           GCD_E2E_REPO: ${{ vars.GCD_E2E_REPO }}
+          GCD_E2E_GCD_VERSION: ${{ vars.GCD_E2E_GCD_VERSION }}
           GCD_TOKEN: ${{ secrets.GCD_E2E_TOKEN }}
           GCD_E2E_READONLY_TOKEN: ${{ secrets.GCD_E2E_READONLY_TOKEN }}
         run: go test -count=1 -v -run E2E ./...

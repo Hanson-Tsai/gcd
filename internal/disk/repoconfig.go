@@ -11,6 +11,7 @@ import (
 	"github.com/Hanson-Tsai/gcd/internal/config"
 	"github.com/Hanson-Tsai/gcd/internal/gitstore"
 	"github.com/Hanson-Tsai/gcd/internal/scan"
+	"github.com/Hanson-Tsai/gcd/internal/workflow"
 )
 
 // ErrRemoteChanged is returned when the remote moved between reading the repo
@@ -31,13 +32,25 @@ func (d *Disk) RepoConfig(ctx context.Context) (raw []byte, head string, err err
 
 // SetRepoConfig checks raw with config.ParseStrict and commits it as the repo
 // config on top of head, the remote head RepoConfig returned. Invalid content
-// is never committed. If the remote moved since head it returns
+// is never committed. When the compaction workflow is installed and
+// compact_schedule changed, the same commit re-renders the workflow (GitHub
+// reads the schedule from the workflow file); that push needs the Workflows
+// permission. If the remote moved since head it returns
 // ErrRemoteChanged and changes nothing. It returns the new commit.
 func (d *Disk) SetRepoConfig(ctx context.Context, raw []byte, head string) (string, error) {
-	if _, err := config.ParseStrict(raw); err != nil {
+	cfg, err := config.ParseStrict(raw)
+	if err != nil {
 		return "", err
 	}
-	return d.commitFile(ctx, head, config.Path, raw, "config from "+d.host)
+	files := map[string][]byte{config.Path: raw}
+	wf, err := d.rescheduledWorkflow(ctx, head, cfg.CompactSchedule)
+	if err != nil {
+		return "", err
+	}
+	if wf != nil {
+		files[workflow.Path] = wf
+	}
+	return d.commitFiles(ctx, head, files, "config from "+d.host)
 }
 
 // EnsureRepoConfig commits the default repo config when the repo has none
@@ -87,6 +100,12 @@ func (d *Disk) fetchTree(ctx context.Context, fetch fetchFunc) (head, tree strin
 // commitFile commits content at path on top of parent (the remote head, ""
 // for an empty remote), keeping every other path, and pushes it.
 func (d *Disk) commitFile(ctx context.Context, parent, path string, content []byte, msg string) (string, error) {
+	return d.commitFiles(ctx, parent, map[string][]byte{path: content}, msg)
+}
+
+// commitFiles is commitFile for several paths (path -> content) in one
+// commit.
+func (d *Disk) commitFiles(ctx context.Context, parent string, files map[string][]byte, msg string) (string, error) {
 	entries := map[string]gitstore.Entry{}
 	if parent != "" {
 		tree, err := d.store.TreeOf(ctx, parent)
@@ -97,11 +116,13 @@ func (d *Disk) commitFile(ctx context.Context, parent, path string, content []by
 			return "", err
 		}
 	}
-	blob, err := d.store.WriteBlob(ctx, content)
-	if err != nil {
-		return "", err
+	for path, content := range files {
+		blob, err := d.store.WriteBlob(ctx, content)
+		if err != nil {
+			return "", err
+		}
+		entries[path] = gitstore.Entry{Mode: gitstore.RegularMode, Hash: blob}
 	}
-	entries[path] = gitstore.Entry{Mode: gitstore.RegularMode, Hash: blob}
 	tree, err := d.store.WriteTree(ctx, entries)
 	if err != nil {
 		return "", err

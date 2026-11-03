@@ -132,6 +132,28 @@ upload, download and turn into conflict copies, which files it would leave
 alone and why, and whether it would need `--yes`. It does not change the
 folder, the remote or the sync state, and it works while `gcd watch` runs.
 
+## History compaction
+
+`gcd init` installs `.github/workflows/gcd-compact.yml` in the repo. It runs
+weekly (`compact_schedule` in `gcd config edit`, cron in UTC) and keeps
+`retention_days` (default 30) of full history, squashing older history into
+one snapshot. `gcd compact` starts it right away and prints the run's link;
+`gcd compact --local` does the same from your machine.
+
+The workflow pins one gcd release: it downloads that release's
+`gcd_<version>_linux_amd64.tar.gz`, checks it against the SHA-256 written
+into the workflow (taken from the release's `checksums.txt`) and only then
+runs it. `gcd workflow upgrade` re-pins it to the gcd you are running
+(`--version x.y.z` pins another release). A development build of gcd has no
+release, so its `gcd init` skips the workflow and says so.
+
+The job pushes with the repository's Actions token. If GitHub refuses the
+compacted history because it touches the workflow file (the Actions token
+cannot have the Workflows permission; the job log then says so), add a
+fine-grained token for that repo with **Contents** and **Workflows: read and
+write** as the repository secret `GCD_TOKEN` (Settings > Secrets and
+variables > Actions). The workflow uses it instead when present.
+
 ## What is not synced
 
 gcd syncs regular files only, byte for byte (no line-ending conversion).

@@ -2,18 +2,21 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	"github.com/Hanson-Tsai/gcd/internal/auth"
 	"github.com/Hanson-Tsai/gcd/internal/compact"
+	"github.com/Hanson-Tsai/gcd/internal/workflow"
 )
 
 func init() {
 	register(command{
 		name:    "compact",
-		usage:   "compact --local [--disk <name>] | --run [--repo <git-url>]",
-		summary: "squash history older than the retention period into one snapshot",
+		usage:   "compact [--disk <name>] | --local [--disk <name>] | --run [--repo <git-url>]",
+		summary: "squash old history into one snapshot (on GitHub Actions, or --local)",
 		run:     runCompact,
 	})
 }
@@ -27,8 +30,8 @@ func init() {
 //     Actions variables GITHUB_SERVER_URL and GITHUB_REPOSITORY. The token
 //     comes from GCD_TOKEN like for every command (auth, #13).
 //
-// gcd compact without a mode will trigger the workflow through the GitHub
-// API (#15).
+// Without a mode, gcd compact starts the compaction workflow on GitHub
+// Actions (workflow_dispatch) and prints the run's page.
 func runCompact(ctx context.Context, e *env, args []string) error {
 	fs := newDiskFlags(e, "compact")
 	local := fs.Bool("local", false, "compact the current disk's repo from this machine")
@@ -37,8 +40,11 @@ func runCompact(ctx context.Context, e *env, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 0 || *local == *runMode || (*local && *repo != "") || (*runMode && e.disk != "") {
+	if fs.NArg() != 0 || (*local && *runMode) || (!*runMode && *repo != "") || (*runMode && e.disk != "") {
 		return errUsage
+	}
+	if !*local && !*runMode {
+		return dispatchCompact(ctx, e)
 	}
 
 	var opts compact.Options
@@ -95,4 +101,30 @@ func commits(n int) string {
 		return "1 commit"
 	}
 	return fmt.Sprintf("%d commits", n)
+}
+
+// dispatchCompact starts the current Disk's compaction workflow.
+func dispatchCompact(ctx context.Context, e *env) error {
+	_, ent, err := openCurrentDisk(e)
+	if err != nil {
+		return err
+	}
+	repo, ok := github.RepoOf(ent.Remote)
+	if !ok {
+		return fmt.Errorf("disk %q is not on GitHub (%s), so it has no Actions workflow; run `gcd compact --local`",
+			ent.Name, ent.Remote)
+	}
+	token, err := remoteToken(ent.Remote)
+	if err != nil {
+		return err
+	}
+	url, err := github.DispatchWorkflow(ctx, repo, token, workflow.FileName, "main")
+	if errors.Is(err, auth.ErrWorkflowNotFound) {
+		return fmt.Errorf("%w\nInstall the workflow with `gcd workflow upgrade`, or run `gcd compact --local`", err)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(e.stdout, "started history compaction on GitHub Actions: %s\n", url)
+	return nil
 }
