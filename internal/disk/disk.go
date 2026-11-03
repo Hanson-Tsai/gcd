@@ -194,16 +194,9 @@ func (d *Disk) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	if err := apply.RemoveTemp(d.folder); err != nil {
 		return Result{}, err
 	}
-	rules, err := d.scanRules(ctx)
+	local, err := d.scanFolder(ctx, d.store.Fetch)
 	if err != nil {
 		return Result{FormatTooNew: errors.Is(err, config.ErrFormatTooNew)}, err
-	}
-	local, err := scan.Scan(d.folder, rules)
-	if err != nil {
-		return Result{}, fmt.Errorf("scan: %w", err)
-	}
-	if d.afterScan != nil {
-		d.afterScan()
 	}
 
 	var r round
@@ -249,6 +242,60 @@ func (d *Disk) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	return res, nil
 }
 
+// Status reports what Sync would do right now without doing it: the uploads,
+// downloads, conflicts (with the copy name Sync would pick today), skipped and
+// rejected paths, and whether the sync would stop for a mass delete
+// (NeedsConfirm, PendingDeletes; Status itself returns no ErrMassDelete).
+// Commit and BaseTree stay empty. A newer repo format fails as in Sync.
+//
+// Status runs Sync's own planning (scan, fetch, file rules, reconcile, mass
+// delete check, re-check of files about to be uploaded), so the two cannot
+// disagree about rules. It changes neither the folder, the remote, the base
+// nor the remote-tracking ref Sync publishes: it fetches with
+// gitstore.Store.Peek, which only adds objects to the git-dir and moves a
+// private ref, and it writes no blobs, trees or commits.
+//
+// Status does not take the sync lock. It writes nothing a Sync reads, so it
+// can safely run while `gcd watch` or `gcd sync` holds the lock, and a Sync
+// may start while it runs. Its result is a snapshot of that moment; during a
+// running sync it may show changes that sync is about to finish.
+func (d *Disk) Status(ctx context.Context) (Result, error) {
+	st, err := loadState(d.stateDir)
+	if err != nil {
+		return Result{}, err
+	}
+	local, err := d.scanFolder(ctx, d.store.Peek)
+	if err != nil {
+		return Result{FormatTooNew: errors.Is(err, config.ErrFormatTooNew)}, err
+	}
+	r, err := d.plan(ctx, d.store.Peek, st, local)
+	if err != nil {
+		return r.res, err
+	}
+	if r.massDelete != nil {
+		r.needsConfirm()
+	}
+	r.res.summarize(r.plan)
+	return r.res, nil
+}
+
+// scanFolder reads the scan rules from the remote (fetched with fetch) and scans
+// the folder with them.
+func (d *Disk) scanFolder(ctx context.Context, fetch fetchFunc) (scan.Result, error) {
+	rules, err := d.scanRules(ctx, fetch)
+	if err != nil {
+		return scan.Result{}, err
+	}
+	local, err := scan.Scan(d.folder, rules)
+	if err != nil {
+		return scan.Result{}, fmt.Errorf("scan: %w", err)
+	}
+	if d.afterScan != nil {
+		d.afterScan()
+	}
+	return local, nil
+}
+
 // round is the outcome of one fetch -> reconcile -> commit -> push attempt.
 type round struct {
 	res  Result
@@ -259,64 +306,61 @@ type round struct {
 	taken    map[string]bool // lower-cased paths on either side plus conflict copies
 	host     string
 	now      time.Time
+
+	// Filled by plan for the rest of the round.
+	remoteHead, remoteTree string
+	remote, base           map[string]gitstore.Entry
+	excluded               []string // paths the file rules leave alone (sides.excluded)
+	// massDelete is the ErrMassDelete error when plan deletes more files
+	// than the repo config allows without confirmation; pendingDeletes is
+	// how many.
+	massDelete     error
+	pendingDeletes int
 }
 
-// round fetches the remote, reconciles it with base and local and, when there
-// is something to upload, commits on top of the remote head and pushes. A push
-// that lost to another device fails with gitstore.ErrPushRejected; at that
-// point nothing outside the git-dir has changed, so the caller can retry.
-func (d *Disk) round(ctx context.Context, st state, local scan.Result, opts SyncOptions) (round, error) {
+// needsConfirm records in the result that the sync needs SyncOptions.Yes.
+func (r *round) needsConfirm() {
+	r.res.NeedsConfirm, r.res.PendingDeletes = true, r.pendingDeletes
+}
+
+// plan is the read-only part of a round, shared by Sync and Status: it
+// fetches the remote with fetch, applies the repo config and the file rules,
+// reconciles base, local and remote, checks the mass-delete limits, names
+// conflict copies and drops uploads whose file changed since the scan
+// (res.Skipped). It writes nothing outside the git-dir's fetched objects and
+// the ref fetch moves.
+func (d *Disk) plan(ctx context.Context, fetch fetchFunc, st state, local scan.Result) (round, error) {
 	var r round
 	res := &r.res
-	remoteHead, err := d.store.Fetch(ctx)
-	if err != nil {
-		return r, fmt.Errorf("fetch: %w", err)
-	}
-	remoteTree := ""
-	if remoteHead != "" {
-		if remoteTree, err = d.store.TreeOf(ctx, remoteHead); err != nil {
-			return r, err
-		}
-	}
-	remote, err := d.store.ReadTree(ctx, remoteTree)
-	if err != nil {
+	var err error
+	if r.remoteHead, r.remoteTree, r.remote, err = d.fetchTree(ctx, fetch); err != nil {
 		return r, err
 	}
-	cfg, err := d.repoConfig(ctx, remote)
+	cfg, err := d.repoConfig(ctx, r.remote)
 	if err != nil {
 		res.FormatTooNew = errors.Is(err, config.ErrFormatTooNew)
 		return r, err
 	}
-	base, err := d.store.ReadTree(ctx, st.BaseTree)
-	if err != nil {
+	if r.base, err = d.store.ReadTree(ctx, st.BaseTree); err != nil {
 		return r, fmt.Errorf("read base tree: %w", err)
 	}
 
-	sides := applyRules(local, base, remote)
-	res.Rejected = sides.rejected
-	plan := reconcile.Reconcile(sides.base, sides.local, sides.remote)
-	if n, err := checkMassDelete(plan, len(sides.base), cfg); err != nil && !opts.Yes {
-		res.NeedsConfirm, res.PendingDeletes = true, n
-		return r, err
-	}
+	sides := applyRules(local, r.base, r.remote)
+	res.Rejected, r.excluded = sides.rejected, sides.excluded
+	r.plan = reconcile.Reconcile(sides.base, sides.local, sides.remote)
+	r.pendingDeletes, r.massDelete = checkMassDelete(r.plan, len(sides.base), cfg)
 	r.host, r.now = d.host, time.Now()
-	r.taken = takenPaths(localHashes(local), treeHashes(remote))
-	r.nameConflictCopies(plan)
+	r.taken = takenPaths(localHashes(local), treeHashes(r.remote))
+	r.nameConflictCopies(r.plan)
 
 	// Re-check every file about to be uploaded: one changed since the scan
-	// sits out this round, and so does one whose content no longer matches
-	// the scanned hash once written as a blob.
-	plan, res.Skipped, err = d.dropChanged(plan, local)
-	if err != nil {
-		return r, err
-	}
-	blobs, plan, skipped, err := d.writeBlobs(ctx, plan)
-	if err != nil {
-		return r, err
-	}
-	res.Skipped = append(res.Skipped, skipped...)
-	sort.Strings(res.Skipped)
+	// sits out this round.
+	r.plan, res.Skipped, err = d.dropChanged(r.plan, local)
+	return r, err
+}
 
+// summarize lists plan's actions as Conflicts, Uploaded and Downloaded.
+func (res *Result) summarize(plan []reconcile.Action) {
 	for _, a := range plan {
 		switch a.Op {
 		case reconcile.Conflict:
@@ -329,10 +373,36 @@ func (d *Disk) round(ctx context.Context, st state, local scan.Result, opts Sync
 			res.Downloaded = append(res.Downloaded, Change{Path: a.Path, Kind: kindOf(a.Local, a.Remote)})
 		}
 	}
+}
 
-	entries, newTree := remote, remoteTree
+// round plans (see plan), stops for a mass delete without opts.Yes and, when
+// there is something to upload, commits on top of the remote head and pushes.
+// A push that lost to another device fails with gitstore.ErrPushRejected; at
+// that point nothing outside the git-dir has changed, so the caller can retry.
+func (d *Disk) round(ctx context.Context, st state, local scan.Result, opts SyncOptions) (round, error) {
+	r, err := d.plan(ctx, d.store.Fetch, st, local)
+	if err != nil {
+		return r, err
+	}
+	if r.massDelete != nil && !opts.Yes {
+		r.needsConfirm()
+		return r, r.massDelete
+	}
+	res := &r.res
+
+	// A file whose content no longer matches the scanned hash once written
+	// as a blob sits out this round too.
+	blobs, plan, skipped, err := d.writeBlobs(ctx, r.plan)
+	if err != nil {
+		return r, err
+	}
+	res.Skipped = append(res.Skipped, skipped...)
+	sort.Strings(res.Skipped)
+	res.summarize(plan)
+
+	entries, newTree := r.remote, r.remoteTree
 	if len(res.Uploaded) > 0 {
-		entries, newTree, res.Commit, err = d.commit(ctx, remote, remoteHead, plan, blobs, res.Uploaded)
+		entries, newTree, res.Commit, err = d.commit(ctx, r.remote, r.remoteHead, plan, blobs, res.Uploaded)
 		if err != nil {
 			return r, err
 		}
@@ -344,7 +414,7 @@ func (d *Disk) round(ctx context.Context, st state, local scan.Result, opts Sync
 		}
 	}
 	r.plan, r.baseTree = plan, newTree
-	if frozen := append(res.Skipped[:len(res.Skipped):len(res.Skipped)], sides.excluded...); len(frozen) > 0 {
+	if frozen := append(res.Skipped[:len(res.Skipped):len(res.Skipped)], r.excluded...); len(frozen) > 0 {
 		// A skipped or excluded path keeps its old base entry, so the next
 		// sync sees the same three-way situation again instead of mistaking
 		// the remote version for the base.
@@ -354,7 +424,7 @@ func (d *Disk) round(ctx context.Context, st state, local scan.Result, opts Sync
 		}
 		changed := false
 		for _, p := range frozen {
-			e, inBase := base[p]
+			e, inBase := r.base[p]
 			if k, ok := kept[p]; ok == inBase && k == e {
 				continue
 			}

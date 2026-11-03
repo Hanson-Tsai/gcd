@@ -127,6 +127,11 @@ Mass deletes: a sync that would delete many files (more than
 example when an external drive is not mounted. Run `gcd sync --yes` if the
 deletions are intended.
 
+Status: `gcd status` fetches the remote and lists what the next sync would
+upload, download and turn into conflict copies, which files it would leave
+alone and why, and whether it would need `--yes`. It does not change the
+folder, the remote or the sync state, and it works while `gcd watch` runs.
+
 ## What is not synced
 
 gcd syncs regular files only, byte for byte (no line-ending conversion).

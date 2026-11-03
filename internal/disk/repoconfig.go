@@ -21,11 +21,11 @@ var ErrRemoteChanged = errors.New("the remote changed meanwhile; nothing was com
 // the repo has none) and the remote head it was read from ("" for an empty
 // remote). Pass that head to SetRepoConfig.
 func (d *Disk) RepoConfig(ctx context.Context) (raw []byte, head string, err error) {
-	head, tree, err := d.fetchTree(ctx)
+	head, _, entries, err := d.fetchTree(ctx, d.store.Fetch)
 	if err != nil {
 		return nil, "", err
 	}
-	raw, err = d.readBlobAt(ctx, tree, config.Path)
+	raw, err = d.readBlobAt(ctx, entries, config.Path)
 	return raw, head, err
 }
 
@@ -64,20 +64,24 @@ func (d *Disk) EnsureRepoConfig(ctx context.Context) (created bool, err error) {
 	}
 }
 
-// fetchTree fetches the remote and returns its head and tree entries.
-func (d *Disk) fetchTree(ctx context.Context) (string, map[string]gitstore.Entry, error) {
-	head, err := d.store.Fetch(ctx)
-	if err != nil {
-		return "", nil, fmt.Errorf("fetch: %w", err)
+// fetchFunc fetches the remote branch and returns its head ("" for an empty
+// remote): gitstore.Store.Fetch for Sync and every command that writes,
+// gitstore.Store.Peek for Status, which must not move the remote-tracking ref.
+type fetchFunc func(context.Context) (string, error)
+
+// fetchTree fetches the remote and returns its head, tree hash and tree
+// entries ("" and none for an empty remote).
+func (d *Disk) fetchTree(ctx context.Context, fetch fetchFunc) (head, tree string, entries map[string]gitstore.Entry, err error) {
+	if head, err = fetch(ctx); err != nil {
+		return "", "", nil, fmt.Errorf("fetch: %w", err)
 	}
-	tree := ""
 	if head != "" {
 		if tree, err = d.store.TreeOf(ctx, head); err != nil {
-			return "", nil, err
+			return "", "", nil, err
 		}
 	}
-	entries, err := d.store.ReadTree(ctx, tree)
-	return head, entries, err
+	entries, err = d.store.ReadTree(ctx, tree)
+	return head, tree, entries, err
 }
 
 // commitFile commits content at path on top of parent (the remote head, ""
@@ -122,8 +126,8 @@ func (d *Disk) commitFile(ctx context.Context, parent, path string, content []by
 // existing files does not upload what the shared rules ignore). Sync calls it
 // before scanning; each sync round then checks the format again after its
 // own fetch.
-func (d *Disk) scanRules(ctx context.Context) (scan.Rules, error) {
-	_, tree, err := d.fetchTree(ctx)
+func (d *Disk) scanRules(ctx context.Context, fetch fetchFunc) (scan.Rules, error) {
+	_, _, tree, err := d.fetchTree(ctx, fetch)
 	if err != nil {
 		return scan.Rules{}, err
 	}
