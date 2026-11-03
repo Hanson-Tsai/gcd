@@ -58,6 +58,30 @@ func TestLogListsWholeDiskHistoryNewestFirst(t *testing.T) {
 	}
 }
 
+// The repo config and the workflow never appear in the folder, so neither do
+// their commits.
+func TestLogHidesManagedPaths(t *testing.T) {
+	remote, devs := fixture.NewDevices(t, 1)
+	a := devs[0]
+	a.Write(t, "a.txt", "1")
+	a.Sync(t)
+	remote.Commit(t, map[string]string{".gcd/config.toml": "format = 1\nretention_days = 7\n"}, "config edit")
+	remote.Commit(t, map[string]string{".github/workflows/gcd-compact.yml": "on: push\n"}, "workflow upgrade")
+	remote.Commit(t, map[string]string{".gcd/config.toml": "format = 1\n", "b.txt": "2"}, "mixed")
+
+	log := logOf(t, a, "")
+
+	if len(log) != 2 {
+		t.Fatalf("got %d entries, want 2 (mixed, a.txt): %+v", len(log), log)
+	}
+	if want := []disk.Change{{Path: "b.txt", Kind: disk.Added}}; !reflect.DeepEqual(log[0].Changes, want) {
+		t.Errorf("newest changes = %+v, want %+v", log[0].Changes, want)
+	}
+	if log := logOf(t, a, ".gcd"); len(log) != 0 {
+		t.Errorf("log of .gcd = %+v, want none", log)
+	}
+}
+
 func TestLogPathShowsOnlyCommitsTouchingIt(t *testing.T) {
 	_, devs := fixture.NewDevices(t, 1)
 	a := devs[0]

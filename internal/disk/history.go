@@ -29,18 +29,26 @@ type LogEntry struct {
 // Log fetches the remote and returns its history, newest first. A non-empty
 // path (slash-separated, relative to the folder; a file or a directory) keeps
 // only the commits that touched it. History older than the retention period
-// has been compacted away and is not listed.
+// has been compacted away and is not listed. Managed paths (the repo config
+// and the workflow) never show: they are left out of Changes, and a commit
+// that changed nothing else is not listed.
 func (d *Disk) Log(ctx context.Context, path string) ([]LogEntry, error) {
 	commits, err := d.history(ctx, path)
 	if err != nil {
 		return nil, err
 	}
-	log := make([]LogEntry, len(commits))
-	for i, c := range commits {
-		log[i] = LogEntry{Commit: c.Hash, Time: c.Time, Host: c.Author, Subject: c.Subject}
+	var log []LogEntry
+	for _, c := range commits {
+		e := LogEntry{Commit: c.Hash, Time: c.Time, Host: c.Author, Subject: c.Subject}
 		for _, fc := range c.Changes {
-			log[i].Changes = append(log[i].Changes, Change{Path: fc.Path, Kind: changeKind(fc.Status)})
+			if !config.IsManaged(fc.Path) {
+				e.Changes = append(e.Changes, Change{Path: fc.Path, Kind: changeKind(fc.Status)})
+			}
 		}
+		if len(e.Changes) == 0 && len(c.Changes) > 0 {
+			continue
+		}
+		log = append(log, e)
 	}
 	return log, nil
 }
