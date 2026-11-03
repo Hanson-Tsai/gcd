@@ -1,8 +1,6 @@
 package fixture
 
 import (
-	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,26 +27,8 @@ func (r *Remote) CommitAt(t testing.TB, spec CommitSpec) string {
 	if spec.Message == "" {
 		spec.Message = "sync from " + spec.Host
 	}
-	index := filepath.Join(tempDir(t), "index")
-	env := []string{"GIT_INDEX_FILE=" + index}
 	head := r.Head(t)
-	if head != "" {
-		r.gitEnv(t, env, "", "read-tree", head)
-	}
-	paths := make([]string, 0, len(spec.Files))
-	for p := range spec.Files {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-	for _, p := range paths {
-		blob := strings.TrimSpace(r.gitEnv(t, nil, spec.Files[p], "hash-object", "-w", "--no-filters", "--stdin"))
-		r.gitEnv(t, env, "", "update-index", "--add", "--cacheinfo", "100644,"+blob+","+p)
-	}
-	for _, p := range spec.Delete {
-		// mode 0 removes the entry; --force-remove would need a work tree.
-		r.gitEnv(t, env, "0 0000000000000000000000000000000000000000\t"+p+"\x00", "update-index", "-z", "--index-info")
-	}
-	tree := strings.TrimSpace(r.gitEnv(t, env, "", "write-tree"))
+	tree := r.tree(t, head, spec.Files, nil, spec.Delete)
 	args := []string{"commit-tree", tree}
 	if head != "" {
 		args = append(args, "-p", head)
