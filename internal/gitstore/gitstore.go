@@ -220,6 +220,12 @@ func (s *Store) WriteBlobs(ctx context.Context, files []string) ([]string, error
 	return hashes, nil
 }
 
+// WriteBlob stores content as a blob (no filters) and returns its hash.
+func (s *Store) WriteBlob(ctx context.Context, content []byte) (string, error) {
+	out, err := s.git(ctx, bytes.NewReader(content), "hash-object", "-w", "--no-filters", "--stdin")
+	return strings.TrimSpace(out), err
+}
+
 // Blob opens the content of a blob. The caller must Close it.
 func (s *Store) Blob(ctx context.Context, hash string) (io.ReadCloser, error) {
 	out, err := s.git(ctx, nil, "cat-file", "blob", hash)

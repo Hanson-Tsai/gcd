@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Hanson-Tsai/gcd/internal/config"
 	"github.com/Hanson-Tsai/gcd/internal/disk"
 	"github.com/Hanson-Tsai/gcd/internal/registry"
 )
@@ -49,11 +50,19 @@ func runInit(ctx context.Context, e *env, args []string) error {
 	if err := reg.Add(ent); err != nil {
 		return err
 	}
-	if _, err := disk.Open(disk.Options{Folder: ent.Folder, Remote: ent.Remote, StateDir: ent.StateDir}); err != nil {
+	d, err := disk.Open(disk.Options{Folder: ent.Folder, Remote: ent.Remote, StateDir: ent.StateDir})
+	if err != nil {
+		return err
+	}
+	createdConfig, err := d.EnsureRepoConfig(ctx)
+	if err != nil {
 		return err
 	}
 	if err := reg.Save(); err != nil {
 		return err
+	}
+	if createdConfig {
+		fmt.Fprintf(e.stdout, "wrote the default repo config %s\n", config.Path)
 	}
 	fmt.Fprintf(e.stdout, "initialized disk %q: %s <-> %s\nrun `gcd sync` to sync\n", name, folder, url)
 	return nil

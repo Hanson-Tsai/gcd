@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Hanson-Tsai/gcd/internal/apply"
+	"github.com/Hanson-Tsai/gcd/internal/config"
 	"github.com/Hanson-Tsai/gcd/internal/gitstore"
 	"github.com/Hanson-Tsai/gcd/internal/reconcile"
 	"github.com/Hanson-Tsai/gcd/internal/scan"
@@ -71,6 +72,9 @@ type Result struct {
 	Downloaded []Change // remote changes written to the folder
 	Commit     string   // commit pushed by this sync, "" if none
 	BaseTree   string   // tree hash recorded as the new base ("" = nothing synced yet)
+	// FormatTooNew: the repo format is newer than this gcd supports; the sync
+	// stopped before changing anything (the error is a *config.FormatError).
+	FormatTooNew bool
 }
 
 // ErrConflict is returned when both sides changed a path differently.
@@ -158,6 +162,10 @@ func (d *Disk) Sync(ctx context.Context, _ SyncOptions) (Result, error) {
 	}
 	remote, err := d.store.ReadTree(ctx, remoteTree)
 	if err != nil {
+		return res, err
+	}
+	if _, err := d.repoConfig(ctx, remote); err != nil {
+		res.FormatTooNew = errors.Is(err, config.ErrFormatTooNew)
 		return res, err
 	}
 	base, err := d.store.ReadTree(ctx, st.BaseTree)
@@ -257,10 +265,16 @@ func kindOf(from, to string) ChangeKind {
 	return Modified
 }
 
+// treeHashes and localHashes build the reconcile inputs. Managed paths
+// (config.IsManaged) are left out on every side, so they are never written to
+// the folder, never uploaded from it and never deleted for being absent; the
+// commit keeps them because it starts from the remote tree.
 func treeHashes(m map[string]gitstore.Entry) reconcile.Files {
 	f := make(reconcile.Files, len(m))
 	for p, e := range m {
-		f[p] = e.Hash
+		if !config.IsManaged(p) {
+			f[p] = e.Hash
+		}
 	}
 	return f
 }
@@ -268,7 +282,9 @@ func treeHashes(m map[string]gitstore.Entry) reconcile.Files {
 func localHashes(r scan.Result) reconcile.Files {
 	f := make(reconcile.Files, len(r.Files))
 	for p, e := range r.Files {
-		f[p] = e.Hash
+		if !config.IsManaged(p) {
+			f[p] = e.Hash
+		}
 	}
 	return f
 }
