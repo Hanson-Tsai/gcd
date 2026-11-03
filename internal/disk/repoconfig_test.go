@@ -111,3 +111,17 @@ func TestSyncRefusesAnInvalidRepoConfig(t *testing.T) {
 		t.Errorf("remote moved from %s to %s", before, got)
 	}
 }
+
+func TestManagedPathsAreNotRestoredIntoTheFolder(t *testing.T) {
+	remote, devs := fixture.NewDevices(t, 1)
+	a := devs[0]
+	remote.Commit(t, map[string]string{".gcd/config.toml": "format = 1\n"}, "install gcd")
+	a.Sync(t)
+
+	_, err := a.Disk.Restore(context.Background(), ".gcd/config.toml", disk.RestoreOptions{})
+
+	if err == nil {
+		t.Error("restoring a managed path succeeded")
+	}
+	a.AssertFiles(t, map[string]string{})
+}
