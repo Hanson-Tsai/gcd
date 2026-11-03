@@ -105,6 +105,23 @@ func TestStatusFetchesPendingDownloadsAndTheNextSyncStillDownloadsThem(t *testin
 	b.AssertFiles(t, map[string]string{"new.md": "n", "edit.md": "2"})
 }
 
+func TestStatusDoesNotHideARemoteUpdateFromWatch(t *testing.T) {
+	_, devs := fixture.NewDevices(t, 2)
+	a, b := devs[0], devs[1]
+	a.Write(t, "a.md", "1")
+	a.Sync(t)
+	b.Sync(t)
+	a.Write(t, "a.md", "2")
+	a.Sync(t)
+
+	status(t, b)
+
+	changed, err := b.Disk.RemoteChanged(context.Background())
+	if err != nil || !changed {
+		t.Fatalf("RemoteChanged after status = %v, %v; want true so watch still syncs", changed, err)
+	}
+}
+
 func TestStatusShowsConflictsWithTheCopySyncWouldMake(t *testing.T) {
 	remote, devs := fixture.NewDevices(t, 2)
 	a, b := devs[0], devs[1]
