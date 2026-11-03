@@ -67,6 +67,16 @@ func (r Rejection) String() string {
 	return fmt.Sprintf("%s%s: %s", r.Path, where, r.Detail)
 }
 
+// CheckPath applies the file-name policy to every segment of the
+// slash-separated path p. It returns the Rejection when p breaks it, else
+// nil.
+func CheckPath(p string) *Rejection {
+	if reason, detail, bad := checkPath(p); bad {
+		return &Rejection{Path: p, Reason: reason, Detail: detail}
+	}
+	return nil
+}
+
 // checkPath applies the file-name policy to every segment of a
 // slash-separated path.
 func checkPath(p string) (Reason, string, bool) {

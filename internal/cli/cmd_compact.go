@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/Hanson-Tsai/gcd/internal/auth"
 	"github.com/Hanson-Tsai/gcd/internal/compact"
+	"github.com/Hanson-Tsai/gcd/internal/disk"
 	"github.com/Hanson-Tsai/gcd/internal/workflow"
 )
 
@@ -23,8 +23,9 @@ func init() {
 
 // runCompact runs history compaction. Both modes run compact.Run:
 //
-//   - --local compacts the current Disk's repo from this machine, reusing the
-//     Disk's git-dir so only new objects are downloaded.
+//   - --local compacts the current Disk's repo from this machine (Disk.Compact),
+//     reusing the Disk's git-dir under its sync lock so only new objects are
+//     downloaded.
 //   - --run is the entry point of the GitHub Actions workflow (#15). It works
 //     in a temporary git-dir and takes the repo from --repo, else from the
 //     Actions variables GITHUB_SERVER_URL and GITHUB_REPOSITORY. The token
@@ -47,38 +48,19 @@ func runCompact(ctx context.Context, e *env, args []string) error {
 		return dispatchCompact(ctx, e)
 	}
 
-	var opts compact.Options
+	var (
+		res compact.Result
+		err error
+	)
 	if *local {
-		_, ent, err := openCurrentDisk(e)
-		if err != nil {
+		var d *disk.Disk
+		if d, _, err = openCurrentDisk(e); err != nil {
 			return err
 		}
-		opts = compact.Options{GitDir: filepath.Join(ent.StateDir, "git"), Remote: ent.Remote}
+		res, err = d.Compact(ctx)
 	} else {
-		// In Actions, GITHUB_SERVER_URL is https://github.com, so the
-		// token comes from GCD_TOKEN (the workflow sets it to github.token).
-		url := *repo
-		if url == "" {
-			server, name := os.Getenv("GITHUB_SERVER_URL"), os.Getenv("GITHUB_REPOSITORY")
-			if server == "" || name == "" {
-				return fmt.Errorf("--run needs --repo <git-url> outside GitHub Actions")
-			}
-			url = server + "/" + name + ".git"
-		}
-		tmp, err := os.MkdirTemp("", "gcd-compact-*")
-		if err != nil {
-			return err
-		}
-		defer os.RemoveAll(tmp)
-		opts = compact.Options{GitDir: filepath.Join(tmp, "git"), Remote: url}
+		res, err = compactRun(ctx, *repo)
 	}
-	token, err := remoteToken(opts.Remote)
-	if err != nil {
-		return err
-	}
-	opts.Token = token
-
-	res, err := compact.Run(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -94,6 +76,30 @@ func runCompact(ctx context.Context, e *env, args []string) error {
 	fmt.Fprintf(e.stdout, "compacted history older than %d days (before %s): %s squashed into snapshot %.7s, %s kept\n",
 		res.RetentionDays, before, commits(res.Squashed), res.NewRoot, commits(res.Kept))
 	return nil
+}
+
+// compactRun compacts the repo at url (default: from the GitHub Actions
+// variables) in a temporary git-dir: the --run mode.
+func compactRun(ctx context.Context, url string) (compact.Result, error) {
+	// In Actions, GITHUB_SERVER_URL is https://github.com, so the token
+	// comes from GCD_TOKEN (the workflow sets it to github.token).
+	if url == "" {
+		server, name := os.Getenv("GITHUB_SERVER_URL"), os.Getenv("GITHUB_REPOSITORY")
+		if server == "" || name == "" {
+			return compact.Result{}, fmt.Errorf("--run needs --repo <git-url> outside GitHub Actions")
+		}
+		url = server + "/" + name + ".git"
+	}
+	token, err := remoteToken(url)
+	if err != nil {
+		return compact.Result{}, err
+	}
+	tmp, err := os.MkdirTemp("", "gcd-compact-*")
+	if err != nil {
+		return compact.Result{}, err
+	}
+	defer os.RemoveAll(tmp)
+	return compact.Run(ctx, compact.Options{GitDir: disk.GitDir(tmp), Remote: url, Token: token})
 }
 
 func commits(n int) string {

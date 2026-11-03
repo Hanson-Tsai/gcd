@@ -66,6 +66,9 @@ var (
 	ErrPathNotFound = errors.New("path not found in history")
 	// ErrExists: a different file already exists at the path in the folder.
 	ErrExists = errors.New("file already exists in the folder")
+	// ErrNameNotAllowed: the path breaks the file-name policy (see package
+	// scan), so it could not sync from the folder.
+	ErrNameNotAllowed = errors.New("name not allowed")
 )
 
 // At selects a point in history. At most one field is set; the zero At means
@@ -123,6 +126,11 @@ type RestoreResult struct {
 // changes only the folder: the next Sync uploads the file like any local
 // edit. path is slash-separated and relative to the folder. A different local
 // file at path is not overwritten unless opts.Force is set.
+//
+// Like Sync, it takes the sync lock (ErrAlreadySyncing when a Sync runs),
+// refuses a repo whose format is newer than this gcd supports
+// (config.ErrFormatTooNew), and refuses a path the file-name policy rejects
+// (ErrNameNotAllowed).
 func (d *Disk) Restore(ctx context.Context, path string, opts RestoreOptions) (RestoreResult, error) {
 	var res RestoreResult
 	rel, err := cleanRel(path)
@@ -132,8 +140,20 @@ func (d *Disk) Restore(ctx context.Context, path string, opts RestoreOptions) (R
 	if config.IsManaged(rel) {
 		return res, fmt.Errorf("%s is managed by gcd and never placed in the folder", rel)
 	}
+	if rej := scan.CheckPath(rel); rej != nil {
+		return res, fmt.Errorf("%w: cannot restore %s: %s", ErrNameNotAllowed, rel, rej.Detail)
+	}
+	unlock, err := d.lock()
+	if err != nil {
+		return res, err
+	}
+	defer unlock()
 	c, err := d.pickCommit(ctx, rel, opts.At)
 	if err != nil {
+		return res, err
+	}
+	// pickCommit fetched: check the repo format at the fetched head.
+	if _, err := d.KnownRepoConfig(ctx); err != nil {
 		return res, err
 	}
 	entries, err := d.store.ReadTree(ctx, c.Tree)

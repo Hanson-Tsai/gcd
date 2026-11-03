@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Hanson-Tsai/gcd/internal/config"
 	"github.com/Hanson-Tsai/gcd/internal/disk"
 	"github.com/Hanson-Tsai/gcd/internal/fixture"
 )
@@ -281,6 +282,55 @@ func TestParseAt(t *testing.T) {
 			t.Errorf("ParseAt(%q) succeeded, want error", bad)
 		}
 	}
+}
+
+func TestRestoreWaitsForNoSync(t *testing.T) {
+	_, devs := fixture.NewDevices(t, 1)
+	a := devs[0]
+	a.Write(t, "a.txt", "v1")
+	a.Sync(t)
+	a.Write(t, "a.txt", "v2")
+	var restoreErr error
+	disk.SetBeforePush(a.Disk, func() {
+		_, restoreErr = a.Disk.Restore(context.Background(), "a.txt", disk.RestoreOptions{Force: true})
+	})
+
+	a.Sync(t)
+
+	if !errors.Is(restoreErr, disk.ErrAlreadySyncing) {
+		t.Fatalf("restore during a sync = %v, want ErrAlreadySyncing", restoreErr)
+	}
+	a.AssertFiles(t, map[string]string{"a.txt": "v2"})
+}
+
+func TestRestoreRefusesANewerRepoFormat(t *testing.T) {
+	remote, devs := fixture.NewDevices(t, 1)
+	a := devs[0]
+	a.Write(t, "a.txt", "v1")
+	a.Sync(t)
+	a.Remove(t, "a.txt")
+	a.SyncYes(t)
+	remote.Commit(t, map[string]string{".gcd/config.toml": "format = 2\n"}, "a newer gcd")
+
+	_, err := a.Disk.Restore(context.Background(), "a.txt", disk.RestoreOptions{})
+
+	if !errors.Is(err, config.ErrFormatTooNew) {
+		t.Fatalf("restore = %v, want ErrFormatTooNew", err)
+	}
+	a.AssertFiles(t, map[string]string{})
+}
+
+func TestRestoreRefusesANameTheFileRulesReject(t *testing.T) {
+	remote, devs := fixture.NewDevices(t, 1)
+	a := devs[0]
+	remote.Commit(t, map[string]string{"draft?.md": "from a client without the rules"}, "other client")
+
+	_, err := a.Disk.Restore(context.Background(), "draft?.md", disk.RestoreOptions{})
+
+	if !errors.Is(err, disk.ErrNameNotAllowed) {
+		t.Fatalf("restore = %v, want ErrNameNotAllowed", err)
+	}
+	a.AssertFiles(t, map[string]string{})
 }
 
 func TestLogEmptyRemoteHasNoEntries(t *testing.T) {

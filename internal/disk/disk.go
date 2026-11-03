@@ -114,6 +114,8 @@ type Disk struct {
 	folder   string
 	stateDir string
 	host     string
+	remote   string
+	token    string
 	store    *gitstore.Store
 
 	afterScan  func() // test hooks, see export_test.go
@@ -148,12 +150,12 @@ func Open(opts Options) (*Disk, error) {
 			return nil, err
 		}
 	}
-	store, err := gitstore.Open(context.Background(), filepath.Join(stateDir, "git"), opts.Remote)
+	store, err := gitstore.Open(context.Background(), GitDir(stateDir), opts.Remote)
 	if err != nil {
 		return nil, err
 	}
 	store.SetToken(opts.Token)
-	return &Disk{folder: folder, stateDir: stateDir, host: host, store: store}, nil
+	return &Disk{folder: folder, stateDir: stateDir, host: host, remote: opts.Remote, token: opts.Token, store: store}, nil
 }
 
 // DefaultHost is the short machine name: os.Hostname up to the first dot.
