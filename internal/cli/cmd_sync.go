@@ -10,21 +10,21 @@ import (
 func init() {
 	register(command{
 		name:    "sync",
-		usage:   "sync",
+		usage:   "sync [--disk <name>]",
 		summary: "upload local changes and download remote changes",
 		run:     runSync,
 	})
 }
 
 func runSync(ctx context.Context, e *env, args []string) error {
-	fs := newFlags(e, "sync")
+	fs := newDiskFlags(e, "sync")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return errUsage
 	}
-	d, _, err := openCurrentDisk()
+	d, _, err := openCurrentDisk(e)
 	if err != nil {
 		return err
 	}
@@ -37,6 +37,9 @@ func runSync(ctx context.Context, e *env, args []string) error {
 	}
 	for _, c := range res.Downloaded {
 		fmt.Fprintf(e.stdout, "down  %s %s\n", sign(c.Kind), c.Path)
+	}
+	for _, c := range res.Conflicts {
+		fmt.Fprintf(e.stdout, "conflict %s: local version kept as %s\n", c.Path, c.Copy)
 	}
 	if len(res.Uploaded)+len(res.Downloaded) == 0 {
 		fmt.Fprintln(e.stdout, "up to date")

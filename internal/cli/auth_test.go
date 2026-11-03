@@ -11,17 +11,8 @@ import (
 	"github.com/Hanson-Tsai/gcd/internal/auth"
 	"github.com/Hanson-Tsai/gcd/internal/auth/authtest"
 	"github.com/Hanson-Tsai/gcd/internal/cli"
-	"github.com/Hanson-Tsai/gcd/internal/gitstore"
 	"github.com/Hanson-Tsai/gcd/internal/registry"
 )
-
-// TestMain lets this test binary act as gcd's GIT_ASKPASS.
-func TestMain(m *testing.M) {
-	if gitstore.ServeAskpass() {
-		os.Exit(0)
-	}
-	os.Exit(m.Run())
-}
 
 const goodToken = "github_pat_11AAgood"
 
