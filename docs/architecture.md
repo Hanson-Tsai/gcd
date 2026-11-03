@@ -28,6 +28,7 @@ Dependency direction: `cli → disk, registry → scan, reconcile, gitstore, app
   registry.json                  Disk list: name, folder, remote, state_dir
   disks/<name>/                  state dir (always outside the synced folder)
     state.json                   {"base_tree": "<tree hash>", "last_sync": ...}
+    sync.lock                    OS lock held for the whole of a Sync; the file stays
     git/                         bare git-dir; remote "origin" = the Disk's URL
 ```
 
@@ -36,7 +37,9 @@ The synced folder holds only user files and never a `.git`. gcd syncs through th
 ## Sync data flow (`disk.Sync`)
 
 ```
+lock <state dir>/sync.lock (busy → ErrAlreadySyncing at once)
 scan.Scan(folder) ──────────────► local  {path → blob hash}
+┌ round, retried up to 5× while Push fails with gitstore.ErrPushRejected
 gitstore.Fetch → TreeOf → ReadTree ► remote {path → Entry}
 gitstore.ReadTree(state.base_tree) ► base   {path → Entry}
                  │
@@ -48,6 +51,7 @@ reconcile.Reconcile(base, local, remote) → []Action
                                          author = host,
                                          "sync from <host>: +A ~M -D")
                             → Push (fast-forward only)
+└ (rejected 5× → ErrRemoteChanging; folder and base untouched)
    Download / DeleteLocal → apply.Apply (temp file + rename)
    + Conflict                (rename local file to Copy, then download remote to Path)
                  │
@@ -63,7 +67,10 @@ Key invariants:
 - Commits are created only when there are local changes to upload. A download-only sync makes no commit.
 - Only `100644` entries are written: no exec bit, no symlinks.
 
-Hooks later tickets plug into: lock and push retry go around fetch → push in `Sync` (#5). The mass-delete check goes between reconcile and commit (#7). The mtime/size re-check goes before commit and before replace (#8). `Status` is the same pipeline without commit, push or apply (#9). Managed paths `.gcd/` and `.github/` are filtered from local/remote before reconcile but kept in the new tree (#3).
+- **One Sync per Disk at a time.** The lock is an OS advisory lock (flock / LockFileEx), so the OS releases it when the holder dies; there is no stale-lock cleanup to do. A crash leaves only an unlocked file.
+- **Everything that depends on the remote lives in `Disk.round`**, which is re-run from fetch on a rejected push. Nothing outside the git-dir may change inside a round; apply and the state write come after it.
+
+Hooks later tickets plug into: the mass-delete check goes between reconcile and commit (#7). The mtime/size re-check goes before commit and before replace (#8). `Status` is the same pipeline without commit, push or apply (#9). Managed paths `.gcd/` and `.github/` are filtered from local/remote before reconcile but kept in the new tree (#3).
 
 ## History: `gcd log` / `gcd restore` (`disk/history.go`)
 

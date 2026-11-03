@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,6 +91,8 @@ type Disk struct {
 	stateDir string
 	host     string
 	store    *gitstore.Store
+
+	beforePush func() // test hook, see export_test.go
 }
 
 // Open prepares the Disk's state dir and git-dir (idempotent) and returns it.
@@ -140,35 +143,95 @@ func DefaultHost() (string, error) {
 // Folder returns the absolute synced folder path.
 func (d *Disk) Folder() string { return d.folder }
 
-// Sync runs one full sync. See the package doc for the steps.
+// maxPushAttempts bounds how often one Sync goes back to fetch -> reconcile
+// -> push when other devices keep pushing in between (spec sync step 6).
+const maxPushAttempts = 5
+
+// ErrRemoteChanging is returned when every push attempt was rejected because
+// other devices kept updating the remote. The folder and the base are
+// unchanged; running Sync again later is safe.
+var ErrRemoteChanging = errors.New("remote kept changing during sync; gave up pushing")
+
+// Sync runs one full sync. See the package doc for the steps. It returns
+// ErrAlreadySyncing at once when another Sync of the same Disk is running.
 func (d *Disk) Sync(ctx context.Context, _ SyncOptions) (Result, error) {
-	var res Result
+	unlock, err := d.lock()
+	if err != nil {
+		return Result{}, err
+	}
+	defer unlock()
+
 	st, err := loadState(d.stateDir)
 	if err != nil {
+		return Result{}, err
+	}
+	local, err := scan.Scan(d.folder)
+	if err != nil {
+		return Result{}, fmt.Errorf("scan: %w", err)
+	}
+
+	var r round
+	for n := 1; ; n++ {
+		r, err = d.round(ctx, st, local)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, gitstore.ErrPushRejected) {
+			return r.res, err
+		}
+		if n == maxPushAttempts {
+			return Result{}, fmt.Errorf("%w after %d attempts: %v", ErrRemoteChanging, n, err)
+		}
+		if err := backoff(ctx, n); err != nil {
+			return Result{}, err
+		}
+	}
+	res := r.res
+
+	if err := apply.Apply(ctx, d.folder, r.plan, d.store); err != nil {
 		return res, err
 	}
 
-	local, err := scan.Scan(d.folder)
-	if err != nil {
-		return res, fmt.Errorf("scan: %w", err)
+	st.BaseTree = r.newTree
+	st.LastSync = time.Now().UTC()
+	if err := saveState(d.stateDir, st); err != nil {
+		return res, err
 	}
+	res.BaseTree = r.newTree
+	return res, nil
+}
+
+// round is the outcome of one fetch -> reconcile -> commit -> push attempt.
+type round struct {
+	res     Result
+	plan    []reconcile.Action
+	newTree string // the tree now at the remote head
+}
+
+// round fetches the remote, reconciles it with base and local and, when there
+// is something to upload, commits on top of the remote head and pushes. A push
+// that lost to another device fails with gitstore.ErrPushRejected; at that
+// point nothing outside the git-dir has changed, so the caller can retry.
+func (d *Disk) round(ctx context.Context, st state, local scan.Result) (round, error) {
+	var r round
+	res := &r.res
 	remoteHead, err := d.store.Fetch(ctx)
 	if err != nil {
-		return res, fmt.Errorf("fetch: %w", err)
+		return r, fmt.Errorf("fetch: %w", err)
 	}
 	remoteTree := ""
 	if remoteHead != "" {
 		if remoteTree, err = d.store.TreeOf(ctx, remoteHead); err != nil {
-			return res, err
+			return r, err
 		}
 	}
 	remote, err := d.store.ReadTree(ctx, remoteTree)
 	if err != nil {
-		return res, err
+		return r, err
 	}
 	base, err := d.store.ReadTree(ctx, st.BaseTree)
 	if err != nil {
-		return res, fmt.Errorf("read base tree: %w", err)
+		return r, fmt.Errorf("read base tree: %w", err)
 	}
 
 	localFiles, remoteFiles := localHashes(local), treeHashes(remote)
@@ -191,24 +254,30 @@ func (d *Disk) Sync(ctx context.Context, _ SyncOptions) (Result, error) {
 	if len(res.Uploaded) > 0 {
 		newTree, res.Commit, err = d.commit(ctx, remote, remoteHead, plan, res.Uploaded)
 		if err != nil {
-			return res, err
+			return r, err
+		}
+		if d.beforePush != nil {
+			d.beforePush()
 		}
 		if err := d.store.Push(ctx, res.Commit); err != nil {
-			return res, fmt.Errorf("push: %w", err)
+			return r, fmt.Errorf("push: %w", err)
 		}
 	}
+	r.plan, r.newTree = plan, newTree
+	return r, nil
+}
 
-	if err := apply.Apply(ctx, d.folder, plan, d.store); err != nil {
-		return res, err
+// backoff waits a short random time before push attempt n+1, so devices that
+// keep colliding drift apart.
+func backoff(ctx context.Context, n int) error {
+	t := time.NewTimer(rand.N(time.Duration(n) * 100 * time.Millisecond))
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
-
-	st.BaseTree = newTree
-	st.LastSync = time.Now().UTC()
-	if err := saveState(d.stateDir, st); err != nil {
-		return res, err
-	}
-	res.BaseTree = newTree
-	return res, nil
 }
 
 // nameConflictCopies sets Copy on every Conflict action to a free conflict
