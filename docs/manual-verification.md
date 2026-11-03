@@ -74,13 +74,19 @@ By hand (keychain and prompts, once per OS):
 7. `gcd init` a public repo: refused before any folder or registry entry is
    created. `gcd init <you>/does-not-exist`: error with the
    `https://github.com/new?...` link.
-8. A token **without Actions** write: init lists `Actions: read and write`
-   as missing. This verifies that GitHub checks the permission before looking
-   up the (nonexistent) workflow in the dispatch probe. If it instead passes,
-   the probe is wrong.
-9. A token **without Workflows** write: there is no probe. Once #15 installs
-   the workflow during init, init must fail with
-   "missing permission: Workflows (read and write)".
+8. A token **without Actions** write: init succeeds with a warning naming
+   `Actions: read and write` and `gcd compact`. This verifies that GitHub
+   checks the permission before looking up the (nonexistent) workflow in the
+   dispatch probe. If no warning appears, the probe is wrong.
+9. A token **without Workflows** write: GitHub has no side-effect-free probe
+   for it; the only check is a push that touches `.github/workflows/`. init
+   pushes the compaction workflow first, so on a repo that does not have it
+   yet init fails with "the token is missing permissions on <repo>:
+   Workflows: read and write" (plus `Actions: read and write` when that is
+   missing too). On a repo that already has the workflow (a second or third
+   machine) init pushes nothing there and **does not check Workflows**; the
+   gap shows only when `gcd workflow upgrade` or a `compact_schedule` change
+   in `gcd config edit` is refused, with the same message.
 10. Confirm that username `x-access-token` with a fine-grained PAT works for
     git over HTTPS (step 5 passing covers it).
 11. Linux without a Secret Service (e.g. SSH session, container): init says the
@@ -195,8 +201,9 @@ What only GitHub can show:
 5. Tamper check: edit `GCD_SHA256` in the workflow on GitHub (one hex digit)
    and run it. The job must fail at the checksum step and never run gcd.
    Restore with `gcd workflow upgrade`.
-6. A token **without Actions** write: `gcd compact` fails naming
-   `Actions: read and write`.
+6. A token **without Actions** write: `gcd init` warns, and `gcd compact`
+   fails naming `Actions: read and write` and suggesting `gcd compact
+   --local`.
 7. `gcd config edit`, change `compact_schedule` to a time a few minutes
    ahead (UTC): one commit changes both `.gcd/config.toml` and the workflow's
    `cron:`, and the scheduled run starts (GitHub may delay it by several

@@ -18,10 +18,11 @@ or use object storage.
 - A **private** GitHub repo per Disk. gcd does not create repos and refuses
   public ones.
 - A fine-grained personal access token for that repo with **Contents:
-  read and write**, **Workflows: read and write** and **Actions: read and
-  write** (Actions is used by `gcd compact`). `gcd init` prints a link to
-  GitHub's token page with these permissions pre-filled; select the repo
-  under *Repository access*.
+  read and write** and **Workflows: read and write**, plus **Actions: read
+  and write** for `gcd compact` to start compaction on GitHub (without it
+  `gcd init` binds the Disk and warns). `gcd init` prints a link to GitHub's
+  token page with these permissions pre-filled; select the repo under
+  *Repository access*.
 
 ## Tokens
 

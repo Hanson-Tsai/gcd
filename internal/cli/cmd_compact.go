@@ -122,6 +122,10 @@ func dispatchCompact(ctx context.Context, e *env) error {
 	if errors.Is(err, auth.ErrWorkflowNotFound) {
 		return fmt.Errorf("%w\nInstall the workflow with `gcd workflow upgrade`, or run `gcd compact --local`", err)
 	}
+	if errors.Is(err, auth.ErrMissingPermissions) {
+		return fmt.Errorf("starting the compaction workflow needs the token's %s permission: %w\n"+
+			"Or run `gcd compact --local`, which does not", auth.PermActions, err)
+	}
 	if err != nil {
 		return err
 	}

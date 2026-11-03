@@ -11,6 +11,7 @@ import (
 	"github.com/Hanson-Tsai/gcd/internal/auth"
 	"github.com/Hanson-Tsai/gcd/internal/config"
 	"github.com/Hanson-Tsai/gcd/internal/disk"
+	"github.com/Hanson-Tsai/gcd/internal/gitstore"
 	"github.com/Hanson-Tsai/gcd/internal/registry"
 	"github.com/Hanson-Tsai/gcd/internal/workflow"
 )
@@ -43,7 +44,8 @@ func runInit(ctx context.Context, e *env, args []string) error {
 	var (
 		url, token string
 		repo       auth.Repo
-		typed      bool // token was typed in and still needs saving
+		optional   []string // permissions the token lacks that init does not need
+		typed      bool     // token was typed in and still needs saving
 		pin        *workflow.Pin
 		devBuild   bool
 	)
@@ -57,7 +59,7 @@ func runInit(ctx context.Context, e *env, args []string) error {
 		if token, typed, err = obtainToken(e, repo); err != nil {
 			return err
 		}
-		if err := github.Check(ctx, repo, token); err != nil {
+		if optional, err = github.Check(ctx, repo, token); err != nil {
 			return err
 		}
 		// The compaction workflow pins this gcd's release. A development
@@ -98,10 +100,13 @@ func runInit(ctx context.Context, e *env, args []string) error {
 	}
 	// The workflow goes first: its push is the only check that the token
 	// has Workflows write, and a refusal must leave the repo, the keychain
-	// and the registry untouched.
+	// and the registry untouched. A repo that already has the workflow
+	// (another machine installed it) is not probed.
 	var wf disk.WorkflowResult
 	if pin != nil {
-		if wf, err = d.InstallWorkflow(ctx, *pin); err != nil {
+		if wf, err = d.InstallWorkflow(ctx, *pin); errors.Is(err, gitstore.ErrWorkflowsPermission) {
+			return workflowsRefused(repo, optional)
+		} else if err != nil {
 			return err
 		}
 	}
@@ -130,6 +135,7 @@ func runInit(ctx context.Context, e *env, args []string) error {
 		fmt.Fprintf(e.stderr, "warning: this gcd is a development build (%s), so the compaction workflow was not installed;\n"+
 			"install a released gcd's with `gcd workflow upgrade --version <x.y.z>`\n", buildVersion())
 	}
+	warnOptional(e, repo, optional)
 	fmt.Fprintf(e.stdout, "initialized disk %q: %s <-> %s\nrun `gcd sync` to sync\n", name, folder, url)
 	return nil
 }

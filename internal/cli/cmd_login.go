@@ -35,13 +35,15 @@ func runLogin(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := github.Check(ctx, r, tok); err != nil {
+	optional, err := github.Check(ctx, r, tok)
+	if err != nil {
 		return err
 	}
 	if err := tokens.Store(r, tok); err != nil {
 		return err
 	}
 	fmt.Fprintf(e.stdout, "saved the token for %s in the OS keychain\n", r)
+	warnOptional(e, r, optional)
 	if os.Getenv(auth.TokenEnv) != "" {
 		fmt.Fprintf(e.stderr, "note: %s is set and takes precedence over the keychain\n", auth.TokenEnv)
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/Hanson-Tsai/gcd/internal/auth"
 	"github.com/Hanson-Tsai/gcd/internal/gitstore"
@@ -44,6 +45,26 @@ func obtainToken(e *env, r auth.Repo) (tok string, typed bool, err error) {
 	return tok, err == nil, err
 }
 
+// warnOptional warns that the token for r lacks the optional permissions
+// auth.GitHub.Check found missing.
+func warnOptional(e *env, r auth.Repo, optional []string) {
+	if len(optional) == 0 {
+		return
+	}
+	fmt.Fprintf(e.stderr, "warning: the token is missing permissions on %s: %s.\n"+
+		"Syncing works, but `gcd compact` cannot start compaction on GitHub until the token has it\n"+
+		"(edit it at https://%s/settings/personal-access-tokens); scheduled compaction and\n"+
+		"`gcd compact --local` do not need it\n",
+		r, strings.Join(optional, ", "), auth.Host)
+}
+
+// workflowsRefused reports a push GitHub refused for lack of Workflows
+// write like the permissions auth.GitHub.Check finds missing, together with
+// the optional ones Check found (also missing).
+func workflowsRefused(r auth.Repo, optional []string) error {
+	return &auth.MissingPermissionsError{Repo: r, Missing: append([]string{auth.PermWorkflows}, optional...)}
+}
+
 // explain adds what to do next to errors caused by GitHub credentials.
 func explain(err error) error {
 	var ae *gitstore.AuthError
@@ -53,7 +74,8 @@ func explain(err error) error {
 				err, r, auth.TokenHelp(r))
 		}
 	}
-	if errors.Is(err, gitstore.ErrWorkflowsPermission) {
+	var we *gitstore.WorkflowsPermissionError
+	if errors.As(err, &we) {
 		if os.Getenv("GITHUB_ACTIONS") == "true" {
 			// gcd compact --run inside the workflow, pushing with github.token.
 			return fmt.Errorf("%w\nGitHub refused rewritten commits that touch %s: the Actions token cannot have\n"+
@@ -62,8 +84,9 @@ func explain(err error) error {
 				"the workflow then pushes with it. Or run `gcd compact --local` on one of your machines",
 				err, workflow.Path, auth.PermWorkflows, auth.PermContents, auth.PermWorkflows, workflow.SecretName)
 		}
-		return fmt.Errorf("%w\nThe token is missing permission: %s. Edit it at https://github.com/settings/personal-access-tokens",
-			err, auth.PermWorkflows)
+		if r, ok := github.RepoOf(we.Remote); ok {
+			return workflowsRefused(r, nil)
+		}
 	}
 	return err
 }

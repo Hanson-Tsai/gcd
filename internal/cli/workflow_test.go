@@ -20,7 +20,11 @@ import (
 	"github.com/Hanson-Tsai/gcd/internal/workflow"
 )
 
-const noWorkflowsToken = "github_pat_noworkflows"
+const (
+	noWorkflowsToken = "github_pat_noworkflows"
+	noActionsToken   = "github_pat_noactions"
+	bareToken        = "github_pat_contentsonly" // neither Workflows nor Actions
+)
 
 // releaseSum is the fake SHA-256 of release v's linux/amd64 archive.
 func releaseSum(v string) string {
@@ -123,8 +127,11 @@ func TestInitWithoutWorkflowsPermissionBindsNothing(t *testing.T) {
 	if code == 0 {
 		t.Fatal("init succeeded")
 	}
-	if !strings.Contains(errOut, auth.PermWorkflows) {
-		t.Errorf("stderr does not name the missing permission %q:\n%s", auth.PermWorkflows, errOut)
+	// Reported like the permissions Check finds missing.
+	for _, s := range []string{"missing permissions on alice/notes: " + auth.PermWorkflows, "personal-access-tokens/new?"} {
+		if !strings.Contains(errOut, s) {
+			t.Errorf("stderr does not mention %q:\n%s", s, errOut)
+		}
 	}
 	if reg := registryFile(t, w.m); strings.Contains(reg, "alice/notes") {
 		t.Errorf("disk was registered:\n%s", reg)
@@ -134,6 +141,58 @@ func TestInitWithoutWorkflowsPermissionBindsNothing(t *testing.T) {
 	}
 	if _, ok := remoteWorkflow(t, w.remote()); ok {
 		t.Error("workflow was installed")
+	}
+}
+
+// A refused workflow push lists every missing permission at once, so the
+// token is fixed in one go.
+func TestInitWithoutWorkflowsOrActionsListsBoth(t *testing.T) {
+	w := newGitHubWorld(t, bareToken+"\n")
+	cli.UseReleases(t, fakeReleases(t, "1.2.3"), "1.2.3")
+
+	code, _, errOut := w.m.run(t, "init", "alice/notes", w.m.folder)
+	if code == 0 {
+		t.Fatal("init succeeded")
+	}
+	if want := "missing permissions on alice/notes: " + auth.PermWorkflows + ", " + auth.PermActions; !strings.Contains(errOut, want) {
+		t.Errorf("stderr does not mention %q:\n%s", want, errOut)
+	}
+}
+
+// Actions write is only needed to start compaction on GitHub (`gcd
+// compact`): init binds the disk and warns, and `gcd compact` says what is
+// missing.
+func TestInitWithoutActionsPermissionWarnsAndCompactExplains(t *testing.T) {
+	w := newGitHubWorld(t, noActionsToken+"\n")
+	cli.UseReleases(t, fakeReleases(t, "1.2.3"), "1.2.3")
+
+	code, _, errOut := w.m.run(t, "init", "alice/notes", w.m.folder)
+	if code != 0 {
+		t.Fatalf("init: exit %d: %s", code, errOut)
+	}
+	for _, s := range []string{"warning", auth.PermActions, "gcd compact"} {
+		if !strings.Contains(errOut, s) {
+			t.Errorf("init stderr does not mention %q:\n%s", s, errOut)
+		}
+	}
+	if !strings.Contains(registryFile(t, w.m), "alice/notes") {
+		t.Error("disk was not registered")
+	}
+	if _, ok := remoteWorkflow(t, w.remote()); !ok {
+		t.Error("workflow was not installed")
+	}
+
+	code, _, errOut = w.m.run(t, "compact")
+	if code == 0 {
+		t.Fatal("compact succeeded without Actions permission")
+	}
+	for _, s := range []string{"missing permissions on alice/notes: " + auth.PermActions, "gcd compact --local"} {
+		if !strings.Contains(errOut, s) {
+			t.Errorf("compact stderr does not mention %q:\n%s", s, errOut)
+		}
+	}
+	if len(w.gh.Dispatches()) != 0 {
+		t.Error("a workflow run started")
 	}
 }
 

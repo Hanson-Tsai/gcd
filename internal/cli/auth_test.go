@@ -30,6 +30,8 @@ func newGitHubWorld(t *testing.T, stdin string) *githubWorld {
 	gh := &authtest.GitHub{Tokens: map[string]authtest.Grant{
 		goodToken:             {Repos: []string{"alice/notes", "alice/blog"}, ContentsWrite: true, WorkflowsWrite: true, ActionsWrite: true},
 		noWorkflowsToken:      {Repos: []string{"alice/notes"}, ContentsWrite: true, ActionsWrite: true},
+		noActionsToken:        {Repos: []string{"alice/notes"}, ContentsWrite: true, WorkflowsWrite: true},
+		bareToken:             {Repos: []string{"alice/notes"}, ContentsWrite: true},
 		"github_pat_readonly": {Repos: []string{"alice/notes"}},
 	}}
 	gh.AddRepo(t, "alice/notes", true)

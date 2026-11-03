@@ -12,6 +12,14 @@ import (
 
 func check(t *testing.T, f *authtest.GitHub, repo, token string) error {
 	t.Helper()
+	_, err := checkOptional(t, f, repo, token)
+	return err
+}
+
+// checkOptional runs Check and also returns the optional permissions it
+// found missing.
+func checkOptional(t *testing.T, f *authtest.GitHub, repo, token string) ([]string, error) {
+	t.Helper()
 	r, err := auth.ParseRepo(repo)
 	if err != nil {
 		t.Fatal(err)
@@ -93,15 +101,29 @@ func TestCheckListsMissingPermissions(t *testing.T) {
 		"https://github.com/settings/personal-access-tokens/new?", "contents=write", "workflows=write", "actions=write")
 }
 
-func TestCheckListsOnlyTheMissingPermission(t *testing.T) {
+// Actions write is only needed to start `gcd compact` on GitHub, so a token
+// without it passes the check with a warning.
+func TestCheckReportsMissingActionsAsOptional(t *testing.T) {
 	f := &authtest.GitHub{
 		Repos:  map[string]bool{"alice/notes": true},
 		Tokens: map[string]authtest.Grant{"noactions": {Repos: []string{"alice/notes"}, ContentsWrite: true}},
 	}
-	err := check(t, f, "alice/notes", "noactions")
-	var mp *auth.MissingPermissionsError
-	if !errors.As(err, &mp) || len(mp.Missing) != 1 || mp.Missing[0] != auth.PermActions {
-		t.Fatalf("Check = %v, want only %q missing", err, auth.PermActions)
+	optional, err := checkOptional(t, f, "alice/notes", "noactions")
+	if err != nil {
+		t.Fatalf("Check = %v, want nil", err)
+	}
+	if len(optional) != 1 || optional[0] != auth.PermActions {
+		t.Errorf("optional missing = %q, want only %q", optional, auth.PermActions)
+	}
+}
+
+func TestCheckFindsNothingMissingForAFullToken(t *testing.T) {
+	f := &authtest.GitHub{
+		Repos:  map[string]bool{"alice/notes": true},
+		Tokens: map[string]authtest.Grant{"good": fullGrant},
+	}
+	if optional, err := checkOptional(t, f, "alice/notes", "good"); err != nil || len(optional) != 0 {
+		t.Fatalf("Check = %q, %v; want nothing missing", optional, err)
 	}
 }
 

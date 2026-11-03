@@ -46,6 +46,20 @@ func (e *AuthError) Error() string {
 func (e *AuthError) Unwrap() error        { return e.Err }
 func (e *AuthError) Is(target error) bool { return target == ErrAuth }
 
+// WorkflowsPermissionError is a push refused because it touches
+// .github/workflows/ and the token lacks Workflows write. It matches
+// ErrWorkflowsPermission.
+type WorkflowsPermissionError struct {
+	Remote string // the remote URL (never contains the token)
+	Err    error  // the git failure, token scrubbed
+}
+
+func (e *WorkflowsPermissionError) Error() string {
+	return fmt.Sprintf("%v: %v", ErrWorkflowsPermission, e.Err)
+}
+func (e *WorkflowsPermissionError) Unwrap() error        { return e.Err }
+func (e *WorkflowsPermissionError) Is(target error) bool { return target == ErrWorkflowsPermission }
+
 // SetToken makes git authenticate to the remote with token (as the HTTPS
 // password). An empty token means no credentials.
 func (s *Store) SetToken(token string) { s.token = token }
@@ -114,7 +128,7 @@ func (s *Store) classify(err error) error {
 	// "refusing to allow a Personal Access Token (or: a GitHub App, as the
 	// Actions token is) to create or update workflow ..."
 	if strings.Contains(ge.Stderr, "refusing to allow a ") && strings.Contains(ge.Stderr, "to create or update workflow") {
-		return fmt.Errorf("%w: %w", ErrWorkflowsPermission, err)
+		return &WorkflowsPermissionError{Remote: s.remote, Err: err}
 	}
 	for _, p := range authFailures {
 		if strings.Contains(ge.Stderr, p) {

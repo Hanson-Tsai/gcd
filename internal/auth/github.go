@@ -127,63 +127,64 @@ func (g GitHub) client() *http.Client {
 //   - the token is valid (else ErrTokenInvalid),
 //   - r exists and the token can see it (else ErrRepoNotFound),
 //   - r is private (else ErrPublicRepo),
-//   - the token may push (Contents write) and dispatch workflows (Actions
-//     write), else a *MissingPermissionsError listing what is missing.
+//   - the token may push (Contents write), else a *MissingPermissionsError
+//     listing what is missing.
+//
+// It returns the optional permissions the token lacks: PermActions when it
+// cannot dispatch workflows, which only `gcd compact` needs. A refusal also
+// lists them, so the user fixes the token in one go.
 //
 // Workflows write has no side-effect-free probe; a push that adds or
 // changes .github/workflows/ fails with gitstore.ErrWorkflowsPermission
 // instead.
-func (g GitHub) Check(ctx context.Context, r Repo, token string) error {
+func (g GitHub) Check(ctx context.Context, r Repo, token string) (optional []string, err error) {
 	resp, err := g.api(ctx, http.MethodGet, "/repos/"+r.String(), token, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	switch {
 	case resp.status == http.StatusOK:
 	case resp.status == http.StatusUnauthorized:
-		return tokenInvalid(r)
+		return nil, tokenInvalid(r)
 	case resp.status == http.StatusNotFound:
 		// A private repo the token was not granted is indistinguishable from
 		// a missing one. Asking anonymously at least spots public repos.
 		anon, err := g.api(ctx, http.MethodGet, "/repos/"+r.String(), "", nil)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if anon.status == http.StatusOK {
-			return publicRepo(r)
+			return nil, publicRepo(r)
 		}
-		return repoNotFound(r)
+		return nil, repoNotFound(r)
 	default:
-		return resp.err("GET /repos/" + r.String())
+		return nil, resp.err("GET /repos/" + r.String())
 	}
 	var info struct {
 		Private bool `json:"private"`
 	}
 	if err := json.Unmarshal(resp.body, &info); err != nil {
-		return fmt.Errorf("GitHub API: parse repository %s: %w", r, err)
+		return nil, fmt.Errorf("GitHub API: parse repository %s: %w", r, err)
 	}
 	if !info.Private {
-		return publicRepo(r)
+		return nil, publicRepo(r)
 	}
 
-	var missing []string
-	ok, err := g.canPush(ctx, r, token)
+	canPush, err := g.canPush(ctx, r, token)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if !ok {
-		missing = append(missing, PermContents)
+	canDispatch, err := g.canDispatch(ctx, r, token)
+	if err != nil {
+		return nil, err
 	}
-	if ok, err = g.canDispatch(ctx, r, token); err != nil {
-		return err
+	if !canDispatch {
+		optional = append(optional, PermActions)
 	}
-	if !ok {
-		missing = append(missing, PermActions)
+	if !canPush {
+		return nil, &MissingPermissionsError{Repo: r, Missing: append([]string{PermContents}, optional...)}
 	}
-	if len(missing) > 0 {
-		return &MissingPermissionsError{Repo: r, Missing: missing}
-	}
-	return nil
+	return optional, nil
 }
 
 // canPush asks for the receive-pack ref advertisement, as `git push` does

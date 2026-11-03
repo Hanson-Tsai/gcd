@@ -34,7 +34,7 @@ func TestE2ECheckAgainstGitHub(t *testing.T) {
 	gh := auth.GitHub{}
 
 	t.Run("private repo with full token", func(t *testing.T) {
-		if err := gh.Check(ctx, repo, token); err != nil {
+		if _, err := gh.Check(ctx, repo, token); err != nil {
 			t.Fatalf("Check = %v", err)
 		}
 	})
@@ -47,18 +47,18 @@ func TestE2ECheckAgainstGitHub(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := gh.Check(ctx, r, token); !errors.Is(err, auth.ErrPublicRepo) {
+		if _, err := gh.Check(ctx, r, token); !errors.Is(err, auth.ErrPublicRepo) {
 			t.Fatalf("Check = %v, want ErrPublicRepo", err)
 		}
 	})
 	t.Run("missing repo", func(t *testing.T) {
 		r := auth.Repo{Owner: repo.Owner, Name: fmt.Sprintf("gcd-e2e-missing-%d", time.Now().UnixNano())}
-		if err := gh.Check(ctx, r, token); !errors.Is(err, auth.ErrRepoNotFound) {
+		if _, err := gh.Check(ctx, r, token); !errors.Is(err, auth.ErrRepoNotFound) {
 			t.Fatalf("Check = %v, want ErrRepoNotFound", err)
 		}
 	})
 	t.Run("invalid token", func(t *testing.T) {
-		err := gh.Check(ctx, repo, "github_pat_11AAAAAAA0invalidinvalidinvalid")
+		_, err := gh.Check(ctx, repo, "github_pat_11AAAAAAA0invalidinvalidinvalid")
 		if !errors.Is(err, auth.ErrTokenInvalid) {
 			t.Fatalf("Check = %v, want ErrTokenInvalid", err)
 		}
@@ -69,7 +69,7 @@ func TestE2ECheckAgainstGitHub(t *testing.T) {
 			t.Skip("set GCD_E2E_READONLY_TOKEN (Contents: read only) to run")
 		}
 		var mp *auth.MissingPermissionsError
-		if err := gh.Check(ctx, repo, ro); !errors.As(err, &mp) || !slices.Contains(mp.Missing, auth.PermContents) {
+		if _, err := gh.Check(ctx, repo, ro); !errors.As(err, &mp) || !slices.Contains(mp.Missing, auth.PermContents) {
 			t.Fatalf("Check = %v, want Contents listed as missing", err)
 		}
 	})
