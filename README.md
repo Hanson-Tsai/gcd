@@ -106,6 +106,13 @@ gcd workflow upgrade             # update the compaction workflow to this gcd ve
 gcd version                      # print the gcd version
 ```
 
+`gcd watch` watches every registered Disk. It syncs once local files have
+been quiet for `debounce_seconds` (default 10) and checks the remote every
+`poll_seconds` (default 60) with one cheap request, downloading only when it
+changed. A sync that would delete many files is skipped with a warning; run
+`gcd sync --yes` yourself if the deletions are intended. Ctrl+C waits for a
+running sync to finish; press it again to quit at once.
+
 Run `gcd` with no arguments to list the commands this build supports.
 Inside a synced folder, gcd works out which Disk you mean; elsewhere, pass
 `--disk <name>`.
