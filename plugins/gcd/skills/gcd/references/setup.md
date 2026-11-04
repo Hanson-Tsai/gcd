@@ -16,7 +16,7 @@ newer. Find the newest release (pre-releases included) with
   (`linux`/`darwin`) and `ARCH` (`amd64`/`arm64`) from `uname -s` / `uname -m`:
 
   ```sh
-  VERSION=0.1.0-rc2 OS=linux ARCH=amd64
+  VERSION=0.1.0 OS=linux ARCH=amd64
   base=https://github.com/Hanson-Tsai/gcd/releases/download/v$VERSION
   curl -fsSLO "$base/gcd_${VERSION}_${OS}_${ARCH}.tar.gz"
   curl -fsSLO "$base/checksums.txt"
@@ -28,7 +28,7 @@ newer. Find the newest release (pre-releases included) with
   Stop if the checksum check fails. On Windows, the archive is
   `gcd_<version>_windows_<arch>.zip`; compare
   `Get-FileHash <zip> -Algorithm SHA256` with `checksums.txt`.
-- **Go 1.24+**: `go install github.com/Hanson-Tsai/gcd/cmd/gcd@v0.1.0-rc2`
+- **Go 1.24+**: `go install github.com/Hanson-Tsai/gcd/cmd/gcd@v0.1.0`
   (or `@latest`). The binary lands in `$(go env GOPATH)/bin`.
 
 gcd also needs system git 2.30 or newer.
